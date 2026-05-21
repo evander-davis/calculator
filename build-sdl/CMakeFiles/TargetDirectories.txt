@@ -1,0 +1,6 @@
+C:/Documents/calculator/build-sdl/CMakeFiles/calc_core.dir
+C:/Documents/calculator/build-sdl/CMakeFiles/calc_core_tests.dir
+C:/Documents/calculator/build-sdl/CMakeFiles/calc_emulator.dir
+C:/Documents/calculator/build-sdl/CMakeFiles/test.dir
+C:/Documents/calculator/build-sdl/CMakeFiles/edit_cache.dir
+C:/Documents/calculator/build-sdl/CMakeFiles/rebuild_cache.dir

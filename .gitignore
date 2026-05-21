@@ -1,0 +1,10 @@
+build/
+out/
+.cache/
+*.obj
+*.o
+*.exe
+*.pdb
+*.ilk
+*.ppm
+calc_*.bin
