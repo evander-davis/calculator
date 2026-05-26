@@ -2,7 +2,6 @@
 
 #include <cctype>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 
 namespace calc {
@@ -10,8 +9,13 @@ namespace {
 
 constexpr int kMaxTokens = 96;
 constexpr int kMaxStack = 32;
-constexpr CalcReal kPi = 3.1415926535897932384626433832795;
-constexpr CalcReal kE = 2.7182818284590452353602874713527;
+
+constexpr CalcReal real(double value) {
+    return static_cast<CalcReal>(value);
+}
+
+constexpr CalcReal kPi = real(3.1415926535897932384626433832795);
+constexpr CalcReal kE = real(2.7182818284590452353602874713527);
 
 enum class TokenKind : std::uint8_t {
     Number,
@@ -153,10 +157,75 @@ bool parse_function(const char* name, int len, Function& function) {
     return false;
 }
 
+bool parse_number(const char* text, int& pos, CalcReal& value) {
+    const int start = pos;
+    CalcReal whole = real(0.0);
+    bool saw_digit = false;
+
+    while (std::isdigit(static_cast<unsigned char>(text[pos]))) {
+        saw_digit = true;
+        whole = whole * real(10.0) + static_cast<CalcReal>(text[pos] - '0');
+        ++pos;
+    }
+
+    CalcReal fraction = real(0.0);
+    CalcReal scale = real(1.0);
+    if (text[pos] == '.') {
+        ++pos;
+        while (std::isdigit(static_cast<unsigned char>(text[pos]))) {
+            saw_digit = true;
+            fraction = fraction * real(10.0) + static_cast<CalcReal>(text[pos] - '0');
+            scale *= real(10.0);
+            ++pos;
+        }
+    }
+
+    if (!saw_digit) {
+        pos = start;
+        return false;
+    }
+
+    int exponent = 0;
+    int exponent_sign = 1;
+    if (text[pos] == 'e' || text[pos] == 'E') {
+        const int exponent_start = pos;
+        ++pos;
+        if (text[pos] == '+' || text[pos] == '-') {
+            exponent_sign = text[pos] == '-' ? -1 : 1;
+            ++pos;
+        }
+        bool saw_exponent_digit = false;
+        while (std::isdigit(static_cast<unsigned char>(text[pos]))) {
+            saw_exponent_digit = true;
+            if (exponent < 1000) {
+                exponent = exponent * 10 + (text[pos] - '0');
+            }
+            ++pos;
+        }
+        if (!saw_exponent_digit) {
+            pos = exponent_start;
+        }
+    }
+
+    value = whole + fraction / scale;
+    const int signed_exponent = exponent * exponent_sign;
+    if (signed_exponent != 0) {
+        int remaining = signed_exponent < 0 ? -signed_exponent : signed_exponent;
+        CalcReal scale10 = real(1.0);
+        while (remaining > 0) {
+            scale10 *= real(10.0);
+            --remaining;
+        }
+        value = signed_exponent < 0 ? value / scale10 : value * scale10;
+    }
+
+    return std::isfinite(value);
+}
+
 EvalResult fail(EvalError error, int pos) {
     EvalResult result{};
     result.ok = false;
-    result.value = 0.0;
+    result.value = real(0.0);
     result.error = error;
     result.error_pos = pos;
     return result;
@@ -169,6 +238,44 @@ EvalResult ok(CalcReal value) {
     result.error = EvalError::None;
     result.error_pos = -1;
     return result;
+}
+
+bool is_near_integer(CalcReal value, int& integer) {
+    if (value < real(-2147483647.0) || value > real(2147483647.0)) {
+        return false;
+    }
+    const CalcReal rounded = value >= real(0.0) ? std::floor(value + real(0.5)) : std::ceil(value - real(0.5));
+    if (std::fabs(value - rounded) > real(0.000000001)) {
+        return false;
+    }
+    integer = static_cast<int>(rounded);
+    return true;
+}
+
+CalcReal pow_integer(CalcReal base, int exponent) {
+    if (exponent == 0) {
+        return real(1.0);
+    }
+    bool negative = exponent < 0;
+    unsigned int count = negative ? static_cast<unsigned int>(-exponent) : static_cast<unsigned int>(exponent);
+    CalcReal result = real(1.0);
+    CalcReal factor = base;
+    while (count > 0u) {
+        if ((count & 1u) != 0u) {
+            result *= factor;
+        }
+        factor *= factor;
+        count >>= 1u;
+    }
+    return negative ? real(1.0) / result : result;
+}
+
+CalcReal pow_fast(CalcReal lhs, CalcReal rhs) {
+    int exponent = 0;
+    if (is_near_integer(rhs, exponent) && exponent >= -16 && exponent <= 16) {
+        return pow_integer(lhs, exponent);
+    }
+    return std::pow(lhs, rhs);
 }
 
 bool parse_to_rpn(const char* expression, ParseState& state) {
@@ -186,20 +293,19 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
         saw_any = true;
 
         if (std::isdigit(ch) || expression[i] == '.') {
-            char* end = nullptr;
-            const CalcReal value = std::strtod(expression + i, &end);
-            if (end == expression + i || !std::isfinite(value)) {
+            CalcReal value = 0.0;
+            const int start = i;
+            if (!parse_number(expression, i, value)) {
                 set_error(state, EvalError::InvalidToken, i);
                 return false;
             }
             Token token{};
             token.kind = TokenKind::Number;
             token.number = value;
-            token.pos = i;
+            token.pos = start;
             if (!push_output(state, token)) {
                 return false;
             }
-            i = static_cast<int>(end - expression);
             expect_operand = false;
             continue;
         }
@@ -443,7 +549,7 @@ EvalResult evaluate_rpn(const ParseState& state, EvalContext& context, bool over
                         }
                         value = lhs / rhs;
                         break;
-                    case '^': value = std::pow(lhs, rhs); break;
+                    case '^': value = pow_fast(lhs, rhs); break;
                     default: return fail(EvalError::InvalidToken, token.pos);
                 }
                 stack[stack_count++] = value;
@@ -492,7 +598,7 @@ const char* skip_spaces(const char* text) {
     return text;
 }
 
-EvalResult evaluate_impl(const char* expression, EvalContext& context, bool override_x, CalcReal x_value) {
+EvalResult evaluate_impl(const char* expression, EvalContext& context, bool override_x, CalcReal x_value, bool update_ans) {
     if (expression == nullptr) {
         return fail(EvalError::EmptyExpression, 0);
     }
@@ -505,14 +611,16 @@ EvalResult evaluate_impl(const char* expression, EvalContext& context, bool over
             if (variable < 'A' || variable > 'Z') {
                 return fail(EvalError::Assignment, static_cast<int>(start - expression));
             }
-            EvalResult assigned = evaluate_impl(after_var + 1, context, override_x, x_value);
+            EvalResult assigned = evaluate_impl(after_var + 1, context, override_x, x_value, update_ans);
             if (!assigned.ok) {
                 return assigned;
             }
             const int idx = variable - 'A';
             context.variables[idx] = assigned.value;
             context.variable_valid[idx] = true;
-            context.ans = assigned.value;
+            if (update_ans) {
+                context.ans = assigned.value;
+            }
             return assigned;
         }
     }
@@ -525,7 +633,7 @@ EvalResult evaluate_impl(const char* expression, EvalContext& context, bool over
     }
 
     EvalResult result = evaluate_rpn(state, context, override_x, x_value);
-    if (result.ok) {
+    if (result.ok && update_ans) {
         context.ans = result.value;
     }
     return result;
@@ -544,11 +652,16 @@ void eval_context_init(EvalContext& context) {
 }
 
 EvalResult evaluate_expression(const char* expression, EvalContext& context) {
-    return evaluate_impl(expression, context, false, 0.0);
+    return evaluate_impl(expression, context, false, 0.0, true);
 }
 
 EvalResult evaluate_expression_with_x(const char* expression, EvalContext& context, CalcReal x_value) {
-    return evaluate_impl(expression, context, true, x_value);
+    return evaluate_impl(expression, context, true, x_value, true);
+}
+
+EvalResult evaluate_expression_with_x_readonly(const char* expression, const EvalContext& context, CalcReal x_value) {
+    EvalContext copy = context;
+    return evaluate_impl(expression, copy, true, x_value, false);
 }
 
 const char* eval_error_text(EvalError error) {

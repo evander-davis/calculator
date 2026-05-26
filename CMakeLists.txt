@@ -4,6 +4,7 @@ project(rp2350_calculator LANGUAGES CXX)
 
 option(CALC_BUILD_EMULATOR "Build the SDL2 desktop emulator when SDL2 is available" ON)
 option(CALC_BUILD_TESTS "Build host-side tests" ON)
+option(CALC_USE_FLOAT "Use float instead of double for CalcReal" OFF)
 
 add_library(calc_core
     src/core/calculator.cpp
@@ -18,6 +19,10 @@ target_include_directories(calc_core
 )
 
 target_compile_features(calc_core PUBLIC cxx_std_17)
+
+if(CALC_USE_FLOAT)
+    target_compile_definitions(calc_core PUBLIC CALC_USE_FLOAT=1)
+endif()
 
 if(MSVC)
     target_compile_options(calc_core PRIVATE /W4 /permissive- /GR-)

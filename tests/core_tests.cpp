@@ -15,7 +15,7 @@ void check(bool condition, const char* name) {
     }
 }
 
-bool nearly(calc::CalcReal a, calc::CalcReal b, calc::CalcReal eps = 1e-9) {
+bool nearly(calc::CalcReal a, calc::CalcReal b, calc::CalcReal eps = sizeof(calc::CalcReal) == sizeof(float) ? 1e-4 : 1e-9) {
     return std::fabs(a - b) <= eps;
 }
 
@@ -50,6 +50,9 @@ int main() {
     result = calc::evaluate_expression("sin(pi/2)", context);
     check(result.ok && nearly(result.value, 1.0), "sin pi over 2");
 
+    result = calc::evaluate_expression("1.25e2", context);
+    check(result.ok && nearly(result.value, 125.0), "decimal exponent parsing");
+
     result = calc::evaluate_expression("A=5", context);
     check(result.ok && nearly(result.value, 5.0), "assignment");
     result = calc::evaluate_expression("A*3", context);
@@ -63,6 +66,10 @@ int main() {
 
     result = calc::evaluate_expression_with_x("X^2", context, 3.0);
     check(result.ok && nearly(result.value, 9.0), "x override");
+    const calc::CalcReal ans_before_readonly = context.ans;
+    result = calc::evaluate_expression_with_x_readonly("X+10", context, 5.0);
+    check(result.ok && nearly(result.value, 15.0), "readonly x evaluation");
+    check(nearly(context.ans, ans_before_readonly), "readonly evaluation leaves ans unchanged");
 
     calc::GraphWindow window{-10.0, 10.0, -5.0, 5.0};
     int sx = -1;

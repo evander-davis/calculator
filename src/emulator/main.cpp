@@ -11,19 +11,19 @@
 
 namespace {
 
-constexpr int kLcdScale = 2;
 constexpr int kLcdX = 20;
 constexpr int kLcdY = 20;
-constexpr int kScaledLcdW = calc::kLcdWidth * kLcdScale;
-constexpr int kScaledLcdH = calc::kLcdHeight * kLcdScale;
 constexpr int kButtonW = 70;
 constexpr int kButtonH = 34;
 constexpr int kButtonGap = 8;
 constexpr int kRows = 8;
 constexpr int kCols = 6;
 constexpr int kKeyboardX = 20;
-constexpr int kKeyboardY = kLcdY + kScaledLcdH + 18;
-constexpr int kWindowW = kLcdX + kScaledLcdW + 20;
+constexpr int kKeyboardY = kLcdY + calc::kLcdHeight + 18;
+constexpr int kKeyboardW = kCols * kButtonW + (kCols - 1) * kButtonGap;
+constexpr int kLcdAreaW = kLcdX + calc::kLcdWidth + 20;
+constexpr int kKeyboardAreaW = kKeyboardX + kKeyboardW + 20;
+constexpr int kWindowW = kLcdAreaW > kKeyboardAreaW ? kLcdAreaW : kKeyboardAreaW;
 constexpr int kWindowH = kKeyboardY + kRows * kButtonH + (kRows - 1) * kButtonGap + 20;
 
 struct Button {
@@ -204,12 +204,7 @@ std::vector<Button> make_buttons() {
 void blit_lcd(calc::Display& canvas, const calc::Color* lcd) {
     for (int y = 0; y < calc::kLcdHeight; ++y) {
         for (int x = 0; x < calc::kLcdWidth; ++x) {
-            const calc::Color pixel = lcd[y * calc::kLcdWidth + x];
-            for (int yy = 0; yy < kLcdScale; ++yy) {
-                for (int xx = 0; xx < kLcdScale; ++xx) {
-                    calc::set_pixel(canvas, kLcdX + x * kLcdScale + xx, kLcdY + y * kLcdScale + yy, pixel);
-                }
-            }
+            calc::set_pixel(canvas, kLcdX + x, kLcdY + y, lcd[y * calc::kLcdWidth + x]);
         }
     }
 }
@@ -342,7 +337,7 @@ int main(int, char**) {
         calc::calc_render();
         calc::clear(canvas_display, calc::rgb565(42, 45, 52));
         blit_lcd(canvas_display, lcd.data());
-        calc::draw_rect(canvas_display, kLcdX - 1, kLcdY - 1, kScaledLcdW + 2, kScaledLcdH + 2, calc::rgb565(8, 9, 11));
+        calc::draw_rect(canvas_display, kLcdX - 1, kLcdY - 1, calc::kLcdWidth + 2, calc::kLcdHeight + 2, calc::rgb565(8, 9, 11));
         draw_buttons(canvas_display, buttons, held_key);
 
         SDL_UpdateTexture(texture, nullptr, canvas.data(), kWindowW * static_cast<int>(sizeof(calc::Color)));

@@ -1,6 +1,6 @@
 #include "calc/calculator.hpp"
 
-#include <cstdio>
+#include <cmath>
 #include <cstring>
 
 namespace calc {
@@ -13,6 +13,10 @@ constexpr Color kRed = 0xf800;
 constexpr Color kGreen = 0x07e0;
 constexpr Color kGray = 0xbdf7;
 constexpr Color kLightGray = 0xe71c;
+
+constexpr CalcReal real(double value) {
+    return static_cast<CalcReal>(value);
+}
 
 struct HistoryEntry {
     char expression[kExpressionCapacity];
@@ -46,6 +50,85 @@ std::uint32_t millis() {
         return g.platform->clock.millis(g.platform->clock.context);
     }
     return 0;
+}
+
+void copy_string(char* dst, std::size_t dst_size, const char* src) {
+    if (dst == nullptr || dst_size == 0u) {
+        return;
+    }
+    if (src == nullptr) {
+        dst[0] = '\0';
+        return;
+    }
+    std::size_t i = 0;
+    while (i + 1u < dst_size && src[i] != '\0') {
+        dst[i] = src[i];
+        ++i;
+    }
+    dst[i] = '\0';
+}
+
+void append_char(char* dst, std::size_t dst_size, std::size_t& pos, char ch) {
+    if (pos + 1u >= dst_size) {
+        return;
+    }
+    dst[pos++] = ch;
+    dst[pos] = '\0';
+}
+
+void append_string(char* dst, std::size_t dst_size, std::size_t& pos, const char* src) {
+    if (src == nullptr) {
+        return;
+    }
+    for (const char* p = src; *p != '\0'; ++p) {
+        append_char(dst, dst_size, pos, *p);
+    }
+}
+
+void append_uint(char* dst, std::size_t dst_size, std::size_t& pos, unsigned int value) {
+    char reversed[10]{};
+    int count = 0;
+    do {
+        reversed[count++] = static_cast<char>('0' + (value % 10u));
+        value /= 10u;
+    } while (value != 0u && count < static_cast<int>(sizeof(reversed)));
+
+    for (int i = count - 1; i >= 0; --i) {
+        append_char(dst, dst_size, pos, reversed[i]);
+    }
+}
+
+void append_fixed_abs(char* dst, std::size_t dst_size, std::size_t& pos, CalcReal value, int decimals) {
+    if (value < 0.0) {
+        value = -value;
+    }
+    unsigned int whole = static_cast<unsigned int>(value);
+    append_uint(dst, dst_size, pos, whole);
+    if (decimals <= 0) {
+        return;
+    }
+
+    CalcReal fraction = value - static_cast<CalcReal>(whole);
+    char digits[8]{};
+    int used = decimals > static_cast<int>(sizeof(digits)) ? static_cast<int>(sizeof(digits)) : decimals;
+    for (int i = 0; i < used; ++i) {
+        fraction *= 10.0;
+        const int digit = static_cast<int>(fraction);
+        digits[i] = static_cast<char>('0' + digit);
+        fraction -= static_cast<CalcReal>(digit);
+    }
+
+    while (used > 0 && digits[used - 1] == '0') {
+        --used;
+    }
+    if (used == 0) {
+        return;
+    }
+
+    append_char(dst, dst_size, pos, '.');
+    for (int i = 0; i < used; ++i) {
+        append_char(dst, dst_size, pos, digits[i]);
+    }
 }
 
 char key_letter(Key key) {
@@ -106,8 +189,8 @@ void push_history(const char* expression, const char* result, bool error) {
     for (int i = kHistoryCapacity - 1; i > 0; --i) {
         g.history[i] = g.history[i - 1];
     }
-    std::snprintf(g.history[0].expression, sizeof(g.history[0].expression), "%s", expression);
-    std::snprintf(g.history[0].result, sizeof(g.history[0].result), "%s", result);
+    copy_string(g.history[0].expression, sizeof(g.history[0].expression), expression);
+    copy_string(g.history[0].result, sizeof(g.history[0].result), result);
     g.history[0].error = error;
     if (g.history_count < kHistoryCapacity) {
         ++g.history_count;
@@ -115,7 +198,46 @@ void push_history(const char* expression, const char* result, bool error) {
 }
 
 void format_value(CalcReal value, char* out, std::size_t size) {
-    std::snprintf(out, size, "%.10g", value);
+    if (out == nullptr || size == 0u) {
+        return;
+    }
+    out[0] = '\0';
+    std::size_t pos = 0;
+
+    if (!std::isfinite(value)) {
+        copy_string(out, size, "ERR");
+        return;
+    }
+    if (value < 0.0) {
+        append_char(out, size, pos, '-');
+        value = -value;
+    }
+    if (value < 0.0000005) {
+        append_char(out, size, pos, '0');
+        return;
+    }
+
+    if (value >= 10000000.0 || value < 0.001) {
+        int exponent = 0;
+        while (value >= 10.0) {
+            value /= 10.0;
+            ++exponent;
+        }
+        while (value < 1.0) {
+            value *= 10.0;
+            --exponent;
+        }
+        append_fixed_abs(out, size, pos, value, 5);
+        append_char(out, size, pos, 'E');
+        if (exponent < 0) {
+            append_char(out, size, pos, '-');
+            exponent = -exponent;
+        }
+        append_uint(out, size, pos, static_cast<unsigned int>(exponent));
+        return;
+    }
+
+    append_fixed_abs(out, size, pos, value, 6);
 }
 
 void evaluate_home() {
@@ -129,7 +251,7 @@ void evaluate_home() {
         push_history(g.home_expr, formatted, false);
         reset_home_expression();
     } else {
-        std::snprintf(formatted, sizeof(formatted), "%s", eval_error_text(result.error));
+        copy_string(formatted, sizeof(formatted), eval_error_text(result.error));
         push_history(g.home_expr, formatted, true);
     }
 }
@@ -218,10 +340,10 @@ void pan_graph(CalcReal dx_fraction, CalcReal dy_fraction) {
 }
 
 void zoom_graph(CalcReal factor) {
-    const CalcReal cx = (g.window.xmin + g.window.xmax) * 0.5;
-    const CalcReal cy = (g.window.ymin + g.window.ymax) * 0.5;
-    const CalcReal hx = (g.window.xmax - g.window.xmin) * 0.5 * factor;
-    const CalcReal hy = (g.window.ymax - g.window.ymin) * 0.5 * factor;
+    const CalcReal cx = (g.window.xmin + g.window.xmax) * real(0.5);
+    const CalcReal cy = (g.window.ymin + g.window.ymax) * real(0.5);
+    const CalcReal hx = (g.window.xmax - g.window.xmin) * real(0.5) * factor;
+    const CalcReal hy = (g.window.ymax - g.window.ymin) * real(0.5) * factor;
     g.window.xmin = cx - hx;
     g.window.xmax = cx + hx;
     g.window.ymin = cy - hy;
@@ -262,12 +384,12 @@ void handle_y_key(Key key) {
 
 void handle_graph_key(Key key) {
     switch (key) {
-        case Key::Left: pan_graph(-0.1, 0.0); break;
-        case Key::Right: pan_graph(0.1, 0.0); break;
-        case Key::Up: pan_graph(0.0, 0.1); break;
-        case Key::Down: pan_graph(0.0, -0.1); break;
-        case Key::Add: zoom_graph(0.75); break;
-        case Key::Subtract: zoom_graph(1.25); break;
+        case Key::Left: pan_graph(real(-0.1), real(0.0)); break;
+        case Key::Right: pan_graph(real(0.1), real(0.0)); break;
+        case Key::Up: pan_graph(real(0.0), real(0.1)); break;
+        case Key::Down: pan_graph(real(0.0), real(-0.1)); break;
+        case Key::Add: zoom_graph(real(0.75)); break;
+        case Key::Subtract: zoom_graph(real(1.25)); break;
         default: break;
     }
 }
@@ -287,11 +409,11 @@ void handle_window_key(Key key) {
             break;
         case Key::Add:
         case Key::Right:
-            *values[g.window_selection] += 1.0;
+            *values[g.window_selection] += real(1.0);
             break;
         case Key::Subtract:
         case Key::Left:
-            *values[g.window_selection] -= 1.0;
+            *values[g.window_selection] -= real(1.0);
             break;
         case Key::Enter:
         case Key::Graph:
@@ -300,11 +422,11 @@ void handle_window_key(Key key) {
         default:
             break;
     }
-    if (g.window.xmax <= g.window.xmin + 0.1) {
-        g.window.xmax = g.window.xmin + 0.1;
+    if (g.window.xmax <= g.window.xmin + real(0.1)) {
+        g.window.xmax = g.window.xmin + real(0.1);
     }
-    if (g.window.ymax <= g.window.ymin + 0.1) {
-        g.window.ymax = g.window.ymin + 0.1;
+    if (g.window.ymax <= g.window.ymin + real(0.1)) {
+        g.window.ymax = g.window.ymin + real(0.1);
     }
 }
 
@@ -378,10 +500,9 @@ void render_graph(Display& display) {
     bool have_prev = false;
     int prev_x = 0;
     int prev_y = 0;
-    EvalContext graph_context = g.eval;
     for (int px = 0; px < kLcdWidth; ++px) {
         const CalcReal x = screen_to_graph_x(g.window, px);
-        EvalResult result = evaluate_expression_with_x(g.y_expr, graph_context, x);
+        EvalResult result = evaluate_expression_with_x_readonly(g.y_expr, g.eval, x);
         int sx = 0;
         int sy = 0;
         if (result.ok && graph_to_screen(g.window, x, result.value, sx, sy)) {
@@ -423,7 +544,10 @@ void render_window(Display& display) {
         char line[48]{};
         char value[24]{};
         format_value(values[i], value, sizeof(value));
-        std::snprintf(line, sizeof(line), "%s=%s", labels[i], value);
+        std::size_t pos = 0;
+        append_string(line, sizeof(line), pos, labels[i]);
+        append_char(line, sizeof(line), pos, '=');
+        append_string(line, sizeof(line), pos, value);
         draw_text(display, 8, y, line, kBlack, g.window_selection == i ? kLightGray : kWhite);
     }
     draw_text(display, 4, 210, "ARROWS SELECT  +/- EDIT", kBlue, kWhite);
@@ -433,7 +557,11 @@ void render_settings(Display& display) {
     clear(display, kWhite);
     title(display, "SETTINGS");
     draw_text(display, 8, 30, "ANGLE: RADIANS", kBlack, kWhite);
+#if defined(CALC_USE_FLOAT) && CALC_USE_FLOAT
+    draw_text(display, 8, 45, "REAL: FLOAT", kBlack, kWhite);
+#else
     draw_text(display, 8, 45, "REAL: DOUBLE", kBlack, kWhite);
+#endif
     draw_text(display, 8, 60, "DISPLAY: RGB565 320X240", kBlack, kWhite);
     draw_text(display, 8, 84, "FIXED BUFFERS ENABLED", kGreen, kWhite);
 }
@@ -453,8 +581,8 @@ void calc_init(Platform& platform) {
     g.platform = &platform;
     g.screen = Screen::Home;
     eval_context_init(g.eval);
-    g.window = {-10.0, 10.0, -6.55, 6.55};
-    std::snprintf(g.y_expr, sizeof(g.y_expr), "sin(X)");
+    g.window = {real(-10.0), real(10.0), real(-6.55), real(6.55)};
+    copy_string(g.y_expr, sizeof(g.y_expr), "sin(X)");
     g.y_len = static_cast<int>(std::strlen(g.y_expr));
     g.y_cursor = g.y_len;
     reset_home_expression();

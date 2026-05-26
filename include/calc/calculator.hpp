@@ -5,7 +5,11 @@
 
 namespace calc {
 
+#if defined(CALC_USE_FLOAT) && CALC_USE_FLOAT
+using CalcReal = float;
+#else
 using CalcReal = double;
+#endif
 using Color = std::uint16_t;
 
 constexpr int kLcdWidth = 320;
@@ -179,6 +183,7 @@ void draw_text(Display& display, int x, int y, const char* text, Color fg, Color
 void eval_context_init(EvalContext& context);
 EvalResult evaluate_expression(const char* expression, EvalContext& context);
 EvalResult evaluate_expression_with_x(const char* expression, EvalContext& context, CalcReal x_value);
+EvalResult evaluate_expression_with_x_readonly(const char* expression, const EvalContext& context, CalcReal x_value);
 const char* eval_error_text(EvalError error);
 
 bool graph_to_screen(const GraphWindow& window, CalcReal x, CalcReal y, int& sx, int& sy);
