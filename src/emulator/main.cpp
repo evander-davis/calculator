@@ -13,11 +13,11 @@ namespace {
 
 constexpr int kLcdX = 20;
 constexpr int kLcdY = 20;
-constexpr int kButtonW = 70;
-constexpr int kButtonH = 34;
-constexpr int kButtonGap = 8;
-constexpr int kRows = 8;
-constexpr int kCols = 6;
+constexpr int kButtonW = 58;
+constexpr int kButtonH = 28;
+constexpr int kButtonGap = 7;
+constexpr int kRows = 10;
+constexpr int kCols = 5;
 constexpr int kKeyboardX = 20;
 constexpr int kKeyboardY = kLcdY + calc::kLcdHeight + 18;
 constexpr int kKeyboardW = kCols * kButtonW + (kCols - 1) * kButtonGap;
@@ -27,7 +27,9 @@ constexpr int kWindowW = kLcdAreaW > kKeyboardAreaW ? kLcdAreaW : kKeyboardAreaW
 constexpr int kWindowH = kKeyboardY + kRows * kButtonH + (kRows - 1) * kButtonGap + 20;
 
 struct Button {
-    const char* label;
+    const char* primary;
+    const char* second;
+    const char* alpha;
     calc::Key key;
     int x;
     int y;
@@ -84,6 +86,7 @@ calc::Key sdl_key(SDL_Keycode code) {
         case SDLK_8: return calc::Key::Digit8;
         case SDLK_9: return calc::Key::Digit9;
         case SDLK_PERIOD: return calc::Key::Dot;
+        case SDLK_COMMA: return calc::Key::Comma;
         case SDLK_PLUS: return calc::Key::Add;
         case SDLK_EQUALS: return calc::Key::Equal;
         case SDLK_MINUS: return calc::Key::Subtract;
@@ -136,68 +139,107 @@ calc::Key sdl_key(SDL_Keycode code) {
     }
 }
 
-void add_button(std::vector<Button>& buttons, int row, int col, const char* label, calc::Key key) {
+void add_button_at(std::vector<Button>& buttons,
+                   int x,
+                   int y,
+                   int w,
+                   int h,
+                   const char* primary,
+                   const char* second,
+                   const char* alpha,
+                   calc::Key key) {
     Button button{};
-    button.label = label;
+    button.primary = primary;
+    button.second = second;
+    button.alpha = alpha;
     button.key = key;
-    button.x = kKeyboardX + col * (kButtonW + kButtonGap);
-    button.y = kKeyboardY + row * (kButtonH + kButtonGap);
-    button.w = kButtonW;
-    button.h = kButtonH;
+    button.x = x;
+    button.y = y;
+    button.w = w;
+    button.h = h;
     buttons.push_back(button);
+}
+
+void add_button(std::vector<Button>& buttons,
+                int row,
+                int col,
+                const char* primary,
+                const char* second,
+                const char* alpha,
+                calc::Key key) {
+    add_button_at(buttons,
+                  kKeyboardX + col * (kButtonW + kButtonGap),
+                  kKeyboardY + row * (kButtonH + kButtonGap),
+                  kButtonW,
+                  kButtonH,
+                  primary,
+                  second,
+                  alpha,
+                  key);
 }
 
 std::vector<Button> make_buttons() {
     std::vector<Button> buttons;
     buttons.reserve(kRows * kCols);
-    add_button(buttons, 0, 0, "HOME", calc::Key::Home);
-    add_button(buttons, 0, 1, "Y=", calc::Key::YEquals);
-    add_button(buttons, 0, 2, "WIN", calc::Key::Window);
-    add_button(buttons, 0, 3, "GRAPH", calc::Key::Graph);
-    add_button(buttons, 0, 4, "SET", calc::Key::Settings);
-    add_button(buttons, 0, 5, "CLR", calc::Key::Clear);
-    add_button(buttons, 1, 0, "SIN", calc::Key::Sin);
-    add_button(buttons, 1, 1, "COS", calc::Key::Cos);
-    add_button(buttons, 1, 2, "TAN", calc::Key::Tan);
-    add_button(buttons, 1, 3, "SQRT", calc::Key::Sqrt);
-    add_button(buttons, 1, 4, "LOG", calc::Key::Log);
-    add_button(buttons, 1, 5, "LN", calc::Key::Ln);
-    add_button(buttons, 2, 0, "7", calc::Key::Digit7);
-    add_button(buttons, 2, 1, "8", calc::Key::Digit8);
-    add_button(buttons, 2, 2, "9", calc::Key::Digit9);
-    add_button(buttons, 2, 3, "/", calc::Key::Divide);
-    add_button(buttons, 2, 4, "^", calc::Key::Power);
-    add_button(buttons, 2, 5, "DEL", calc::Key::Back);
-    add_button(buttons, 3, 0, "4", calc::Key::Digit4);
-    add_button(buttons, 3, 1, "5", calc::Key::Digit5);
-    add_button(buttons, 3, 2, "6", calc::Key::Digit6);
-    add_button(buttons, 3, 3, "*", calc::Key::Multiply);
-    add_button(buttons, 3, 4, "(", calc::Key::LParen);
-    add_button(buttons, 3, 5, ")", calc::Key::RParen);
-    add_button(buttons, 4, 0, "1", calc::Key::Digit1);
-    add_button(buttons, 4, 1, "2", calc::Key::Digit2);
-    add_button(buttons, 4, 2, "3", calc::Key::Digit3);
-    add_button(buttons, 4, 3, "-", calc::Key::Subtract);
-    add_button(buttons, 4, 4, "ANS", calc::Key::Ans);
-    add_button(buttons, 4, 5, "PI", calc::Key::Pi);
-    add_button(buttons, 5, 0, "0", calc::Key::Digit0);
-    add_button(buttons, 5, 1, ".", calc::Key::Dot);
-    add_button(buttons, 5, 2, "=", calc::Key::Equal);
-    add_button(buttons, 5, 3, "+", calc::Key::Add);
-    add_button(buttons, 5, 4, "X", calc::Key::X);
-    add_button(buttons, 5, 5, "ENTER", calc::Key::Enter);
-    add_button(buttons, 6, 0, "A", calc::Key::LetterA);
-    add_button(buttons, 6, 1, "B", calc::Key::LetterB);
-    add_button(buttons, 6, 2, "C", calc::Key::LetterC);
-    add_button(buttons, 6, 3, "LEFT", calc::Key::Left);
-    add_button(buttons, 6, 4, "UP", calc::Key::Up);
-    add_button(buttons, 6, 5, "RIGHT", calc::Key::Right);
-    add_button(buttons, 7, 0, "ASIN", calc::Key::ASin);
-    add_button(buttons, 7, 1, "ACOS", calc::Key::ACos);
-    add_button(buttons, 7, 2, "ATAN", calc::Key::ATan);
-    add_button(buttons, 7, 3, "ABOUT", calc::Key::About);
-    add_button(buttons, 7, 4, "DOWN", calc::Key::Down);
-    add_button(buttons, 7, 5, "E", calc::Key::ConstE);
+    add_button(buttons, 0, 0, "Y=", "STATPLT", "F1", calc::Key::YEquals);
+    add_button(buttons, 0, 1, "WINDOW", "TBLSET", "F2", calc::Key::Window);
+    add_button(buttons, 0, 2, "ZOOM", "FORMAT", "F3", calc::Key::Zoom);
+    add_button(buttons, 0, 3, "TRACE", "CALC", "F4", calc::Key::Trace);
+    add_button(buttons, 0, 4, "GRAPH", "TABLE", "F5", calc::Key::Graph);
+    add_button(buttons, 1, 0, "2ND", "", "", calc::Key::Second);
+    add_button(buttons, 1, 1, "n/d", "MODE", "", calc::Key::Fraction);
+    add_button(buttons, 1, 4, "DEL", "INS", "", calc::Key::Delete);
+    add_button(buttons, 2, 0, "ALPHA", "A-LOCK", "", calc::Key::Alpha);
+    add_button(buttons, 2, 1, "X,T,t,n", "LINK", "", calc::Key::X);
+    add_button(buttons, 2, 4, "STAT", "LIST", "", calc::Key::Stat);
+    add_button(buttons, 3, 0, "MATH", "TEST", "A", calc::Key::Math);
+    add_button(buttons, 3, 1, "APPS", "ANGLE", "B", calc::Key::Apps);
+    add_button(buttons, 3, 2, "PRGM", "DRAW", "C", calc::Key::Program);
+    add_button(buttons, 3, 3, "VARS", "DISTR", "", calc::Key::Vars);
+    add_button(buttons, 3, 4, "CLEAR", "", "", calc::Key::Clear);
+    add_button(buttons, 4, 0, "x^-1", "MATRIX", "D", calc::Key::Reciprocal);
+    add_button(buttons, 4, 1, "SIN", "SIN^-1", "E", calc::Key::Sin);
+    add_button(buttons, 4, 2, "COS", "COS^-1", "F", calc::Key::Cos);
+    add_button(buttons, 4, 3, "TAN", "TAN^-1", "G", calc::Key::Tan);
+    add_button(buttons, 4, 4, "^", "PI", "H", calc::Key::Power);
+    add_button(buttons, 5, 0, "x^2", "SQRT", "", calc::Key::Square);
+    add_button(buttons, 5, 1, ",", "EE", "J", calc::Key::Comma);
+    add_button(buttons, 5, 2, "(", "{", "K", calc::Key::LParen);
+    add_button(buttons, 5, 3, ")", "}", "L", calc::Key::RParen);
+    add_button(buttons, 5, 4, "/", "e", "M", calc::Key::Divide);
+    add_button(buttons, 6, 0, "LOG", "10^x", "N", calc::Key::Log);
+    add_button(buttons, 6, 1, "7", "u", "O", calc::Key::Digit7);
+    add_button(buttons, 6, 2, "8", "v", "P", calc::Key::Digit8);
+    add_button(buttons, 6, 3, "9", "w", "Q", calc::Key::Digit9);
+    add_button(buttons, 6, 4, "*", "[", "R", calc::Key::Multiply);
+    add_button(buttons, 7, 0, "LN", "e^x", "S", calc::Key::Ln);
+    add_button(buttons, 7, 1, "4", "L4", "T", calc::Key::Digit4);
+    add_button(buttons, 7, 2, "5", "L5", "U", calc::Key::Digit5);
+    add_button(buttons, 7, 3, "6", "L6", "V", calc::Key::Digit6);
+    add_button(buttons, 7, 4, "-", "]", "W", calc::Key::Subtract);
+    add_button(buttons, 8, 0, "STO>", "RCL", "X", calc::Key::Store);
+    add_button(buttons, 8, 1, "1", "L1", "Y", calc::Key::Digit1);
+    add_button(buttons, 8, 2, "2", "L2", "Z", calc::Key::Digit2);
+    add_button(buttons, 8, 3, "3", "L3", "t", calc::Key::Digit3);
+    add_button(buttons, 8, 4, "+", "MEM", "\"", calc::Key::Add);
+    add_button(buttons, 9, 0, "ON", "OFF", "", calc::Key::On);
+    add_button(buttons, 9, 1, "0", "CATALOG", "SPACE", calc::Key::Digit0);
+    add_button(buttons, 9, 2, ".", "I", ":", calc::Key::Dot);
+    add_button(buttons, 9, 3, "(-)", "ANS", "?", calc::Key::Negate);
+    add_button(buttons, 9, 4, "ENTER", "ENTRY", "SOLVE", calc::Key::Enter);
+
+    const int arrow_area_x = kKeyboardX + 2 * (kButtonW + kButtonGap);
+    const int arrow_area_y = kKeyboardY + 1 * (kButtonH + kButtonGap);
+    const int arrow_area_w = 2 * kButtonW + kButtonGap;
+    const int arrow_area_h = 2 * kButtonH + kButtonGap;
+    constexpr int arrow_w = 35;
+    constexpr int arrow_h = 22;
+    const int arrow_center_x = arrow_area_x + (arrow_area_w - arrow_w) / 2;
+    const int arrow_center_y = arrow_area_y + (arrow_area_h - arrow_h) / 2;
+    add_button_at(buttons, arrow_center_x, arrow_area_y, arrow_w, arrow_h, "UP", "BRI+", "", calc::Key::Up);
+    add_button_at(buttons, arrow_area_x + 7, arrow_center_y, arrow_w, arrow_h, "LEFT", "", "", calc::Key::Left);
+    add_button_at(buttons, arrow_area_x + arrow_area_w - arrow_w - 7, arrow_center_y, arrow_w, arrow_h, "RIGHT", "", "", calc::Key::Right);
+    add_button_at(buttons, arrow_center_x, arrow_area_y + arrow_area_h - arrow_h, arrow_w, arrow_h, "DOWN", "BRI-", "", calc::Key::Down);
     return buttons;
 }
 
@@ -214,14 +256,27 @@ void draw_buttons(calc::Display& canvas, const std::vector<Button>& buttons, cal
     const calc::Color outline = calc::rgb565(20, 22, 27);
     const calc::Color face = calc::rgb565(224, 228, 236);
     const calc::Color active = calc::rgb565(170, 210, 255);
+    const calc::Color second = calc::rgb565(38, 86, 160);
+    const calc::Color alpha = calc::rgb565(34, 118, 70);
     for (const Button& button : buttons) {
         const bool held = button.key == held_key;
         calc::fill_rect(canvas, button.x, button.y, button.w, button.h, held ? active : face);
         calc::draw_rect(canvas, button.x, button.y, button.w, button.h, outline);
-        const int label_w = static_cast<int>(std::strlen(button.label)) * 6;
-        calc::draw_text(canvas, button.x + (button.w - label_w) / 2, button.y + 13, button.label, outline, held ? active : face);
+        if (button.second != nullptr && button.second[0] != '\0') {
+            calc::draw_text(canvas, button.x + 3, button.y + 3, button.second, second, held ? active : face);
+        }
+        if (button.alpha != nullptr && button.alpha[0] != '\0') {
+            const int alpha_w = static_cast<int>(std::strlen(button.alpha)) * 6;
+            calc::draw_text(canvas, button.x + button.w - alpha_w - 3, button.y + 3, button.alpha, alpha, held ? active : face);
+        }
+        const int label_w = static_cast<int>(std::strlen(button.primary)) * 6;
+        int label_x = button.x + (button.w - label_w) / 2;
+        if (label_x < button.x + 2) {
+            label_x = button.x + 2;
+        }
+        calc::draw_text(canvas, label_x, button.y + button.h - 12, button.primary, outline, held ? active : face);
     }
-    calc::draw_text(canvas, 20, kWindowH - 14, "HOST: F1 HOME F2 Y= F3 GRAPH F4 WINDOW", calc::rgb565(210, 214, 220), bg);
+    calc::draw_text(canvas, 20, kWindowH - 14, "HOST: KEYS/ARROWS/ENTER  F12 SHOT", calc::rgb565(210, 214, 220), bg);
 }
 
 bool save_screenshot(const char* path, const calc::Color* lcd) {

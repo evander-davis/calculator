@@ -1,2 +1,2 @@
-calc_core_tests 7 0.00436907
+calc_core_tests 25 0.00121094
 ---

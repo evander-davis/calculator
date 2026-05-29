@@ -58,6 +58,16 @@ int main() {
     result = calc::evaluate_expression("A*3", context);
     check(result.ok && nearly(result.value, 15.0), "variable reuse");
 
+    result = calc::evaluate_expression("2+2", context);
+    check(result.ok && nearly(result.value, 4.0), "ans source expression");
+    result = calc::evaluate_expression("Ans*3", context);
+    check(result.ok && nearly(result.value, 12.0), "ans variable reuse");
+
+    result = calc::evaluate_expression("42->B", context);
+    check(result.ok && nearly(result.value, 42.0), "store arrow assignment");
+    result = calc::evaluate_expression("B+1", context);
+    check(result.ok && nearly(result.value, 43.0), "store arrow variable reuse");
+
     result = calc::evaluate_expression("1/0", context);
     check(!result.ok && result.error == calc::EvalError::DivideByZero, "divide by zero");
 
@@ -80,6 +90,17 @@ int main() {
     check(nearly(calc::screen_to_graph_x(window, 0), -10.0), "screen x min");
     check(nearly(calc::screen_to_graph_y(window, 0), 5.0), "screen y max");
 
+    calc::LayoutDebugInfo layout{};
+    check(calc::calc_debug_layout_expression("sqrt(3)", layout) && layout.width > 0 && layout.height >= 14,
+          "layout sqrt measurement");
+    const int sqrt_height = layout.height;
+    check(calc::calc_debug_layout_expression("1^2", layout) && layout.anchor_count >= 3 && layout.ascent > 11,
+          "layout exponent anchors");
+    check(calc::calc_debug_layout_expression("()/()", layout) && layout.anchor_count >= 4 && layout.height > 20,
+          "layout empty fraction anchors");
+    check(calc::calc_debug_layout_expression("(1)/(sqrt(2^3))", layout) && layout.height > sqrt_height,
+          "layout nested height grows");
+
     calc::Color pixels[calc::kLcdWidth * calc::kLcdHeight]{};
     TestClock clock{0};
     calc::Platform platform{};
@@ -100,6 +121,23 @@ int main() {
         }
     }
     check(nonzero > 1000, "home render non-empty");
+
+    calc::calc_init(platform);
+    press(calc::Key::Fraction);
+    press(calc::Key::Sqrt);
+    press(calc::Key::Digit3);
+    press(calc::Key::Down);
+    press(calc::Key::Digit2);
+    press(calc::Key::Power);
+    press(calc::Key::Digit3);
+    calc::calc_render();
+    std::uint32_t nested_nonwhite = 0;
+    for (calc::Color pixel : pixels) {
+        if (pixel != 0xffff) {
+            ++nested_nonwhite;
+        }
+    }
+    check(nested_nonwhite > 100, "nested layout render non-empty");
 
     press(calc::Key::YEquals);
     check(calc::calc_screen() == calc::Screen::YEquals, "y= navigation");

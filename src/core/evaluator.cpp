@@ -598,12 +598,57 @@ const char* skip_spaces(const char* text) {
     return text;
 }
 
+int find_store_arrow(const char* expression) {
+    int depth = 0;
+    for (int i = 0; expression[i] != '\0'; ++i) {
+        if (expression[i] == '(') {
+            ++depth;
+        } else if (expression[i] == ')' && depth > 0) {
+            --depth;
+        } else if (depth == 0 && expression[i] == '-' && expression[i + 1] == '>') {
+            return i;
+        }
+    }
+    return -1;
+}
+
 EvalResult evaluate_impl(const char* expression, EvalContext& context, bool override_x, CalcReal x_value, bool update_ans) {
     if (expression == nullptr) {
         return fail(EvalError::EmptyExpression, 0);
     }
 
     const char* start = skip_spaces(expression);
+    const int store_pos = find_store_arrow(start);
+    if (store_pos >= 0) {
+        const char* rhs = skip_spaces(start + store_pos + 2);
+        if (!std::isalpha(static_cast<unsigned char>(rhs[0])) || skip_spaces(rhs + 1)[0] != '\0') {
+            return fail(EvalError::Assignment, static_cast<int>(rhs - expression));
+        }
+        const char variable = static_cast<char>(std::toupper(static_cast<unsigned char>(rhs[0])));
+        if (variable < 'A' || variable > 'Z') {
+            return fail(EvalError::Assignment, static_cast<int>(rhs - expression));
+        }
+        char lhs[kExpressionCapacity]{};
+        if (store_pos <= 0 || store_pos >= kExpressionCapacity) {
+            return fail(EvalError::Assignment, static_cast<int>(start - expression + store_pos));
+        }
+        for (int i = 0; i < store_pos; ++i) {
+            lhs[i] = start[i];
+        }
+        lhs[store_pos] = '\0';
+        EvalResult assigned = evaluate_impl(lhs, context, override_x, x_value, update_ans);
+        if (!assigned.ok) {
+            return assigned;
+        }
+        const int idx = variable - 'A';
+        context.variables[idx] = assigned.value;
+        context.variable_valid[idx] = true;
+        if (update_ans) {
+            context.ans = assigned.value;
+        }
+        return assigned;
+    }
+
     if (std::isalpha(static_cast<unsigned char>(start[0]))) {
         const char variable = static_cast<char>(std::toupper(static_cast<unsigned char>(start[0])));
         const char* after_var = skip_spaces(start + 1);

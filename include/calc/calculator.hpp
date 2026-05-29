@@ -15,7 +15,7 @@ using Color = std::uint16_t;
 constexpr int kLcdWidth = 320;
 constexpr int kLcdHeight = 240;
 constexpr int kExpressionCapacity = 96;
-constexpr int kHistoryCapacity = 6;
+constexpr int kHistoryCapacity = 8;
 
 enum class Key : std::uint8_t {
     None,
@@ -91,7 +91,23 @@ enum class Key : std::uint8_t {
     LetterW,
     LetterX,
     LetterY,
-    LetterZ
+    LetterZ,
+    Second,
+    Alpha,
+    Mode,
+    Zoom,
+    Trace,
+    Stat,
+    Math,
+    Apps,
+    Program,
+    Reciprocal,
+    Square,
+    Comma,
+    Store,
+    On,
+    Negate,
+    Fraction
 };
 
 enum class Screen : std::uint8_t {
@@ -172,6 +188,15 @@ struct EvalResult {
     int error_pos;
 };
 
+struct LayoutDebugInfo {
+    int width;
+    int ascent;
+    int descent;
+    int height;
+    int anchor_count;
+    bool overflow;
+};
+
 Color rgb565(std::uint8_t r, std::uint8_t g, std::uint8_t b);
 void clear(Display& display, Color color);
 void set_pixel(Display& display, int x, int y, Color color);
@@ -179,6 +204,7 @@ void draw_line(Display& display, int x0, int y0, int x1, int y1, Color color);
 void draw_rect(Display& display, int x, int y, int w, int h, Color color);
 void fill_rect(Display& display, int x, int y, int w, int h, Color color);
 void draw_text(Display& display, int x, int y, const char* text, Color fg, Color bg);
+void draw_text_scaled(Display& display, int x, int y, const char* text, int scale, Color fg, Color bg);
 
 void eval_context_init(EvalContext& context);
 EvalResult evaluate_expression(const char* expression, EvalContext& context);
@@ -196,5 +222,6 @@ void calc_key_down(Key key);
 void calc_key_up(Key key);
 void calc_render();
 Screen calc_screen();
+bool calc_debug_layout_expression(const char* expression, LayoutDebugInfo& info);
 
 }  // namespace calc

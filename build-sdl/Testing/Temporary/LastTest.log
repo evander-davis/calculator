@@ -1,10 +1,10 @@
-Start testing: May 22 14:37 Central Daylight Time
+Start testing: May 29 11:56 Central Daylight Time
 ----------------------------------------------------------
 1/1 Testing: calc_core_tests
 1/1 Test: calc_core_tests
 Command: "C:/Documents/calculator/build-sdl/calc_core_tests.exe"
 Directory: C:/Documents/calculator/build-sdl
-"calc_core_tests" start time: May 22 14:37 Central Daylight Time
+"calc_core_tests" start time: May 29 11:56 Central Daylight Time
 Output:
 ----------------------------------------------------------
 All core tests passed
@@ -12,8 +12,8 @@ All core tests passed
 Test time =   0.03 sec
 ----------------------------------------------------------
 Test Passed.
-"calc_core_tests" end time: May 22 14:37 Central Daylight Time
+"calc_core_tests" end time: May 29 11:56 Central Daylight Time
 "calc_core_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-End testing: May 22 14:37 Central Daylight Time
+End testing: May 29 11:56 Central Daylight Time
