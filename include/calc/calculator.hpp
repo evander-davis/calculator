@@ -194,6 +194,11 @@ struct LayoutDebugInfo {
     int descent;
     int height;
     int anchor_count;
+    int large_text_count;
+    int small_text_count;
+    int fraction_count;
+    int sqrt_count;
+    int superscript_count;
     bool overflow;
 };
 
@@ -223,5 +228,9 @@ void calc_key_up(Key key);
 void calc_render();
 Screen calc_screen();
 bool calc_debug_layout_expression(const char* expression, LayoutDebugInfo& info);
+void calc_debug_set_home_expression(const char* expression, int cursor);
+const char* calc_debug_home_expression();
+int calc_debug_home_cursor();
+int calc_debug_home_scroll_x();
 
 }  // namespace calc

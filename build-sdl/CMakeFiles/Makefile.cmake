@@ -62,5 +62,6 @@ set(CMAKE_MAKEFILE_PRODUCTS
 set(CMAKE_DEPEND_INFO_FILES
   "CMakeFiles/calc_core.dir/DependInfo.cmake"
   "CMakeFiles/calc_core_tests.dir/DependInfo.cmake"
+  "CMakeFiles/calc_visual_verifier.dir/DependInfo.cmake"
   "CMakeFiles/calc_emulator.dir/DependInfo.cmake"
   )

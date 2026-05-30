@@ -39,6 +39,13 @@ if(CALC_BUILD_TESTS)
     target_link_libraries(calc_core_tests PRIVATE calc_core)
     target_compile_features(calc_core_tests PRIVATE cxx_std_17)
     add_test(NAME calc_core_tests COMMAND calc_core_tests)
+
+    add_executable(calc_visual_verifier
+        tests/visual_verifier.cpp
+    )
+    target_link_libraries(calc_visual_verifier PRIVATE calc_core)
+    target_compile_features(calc_visual_verifier PRIVATE cxx_std_17)
+    add_test(NAME calc_visual_verifier COMMAND calc_visual_verifier)
 endif()
 
 if(CALC_BUILD_EMULATOR)

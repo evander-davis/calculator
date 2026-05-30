@@ -219,6 +219,15 @@ void append_or_ans(char* buffer, int& len, int& cursor, const char* op_text) {
     insert_text(buffer, len, cursor, op_text);
 }
 
+void insert_power_template(char* buffer, int& len, int& cursor) {
+    if (cursor == 0) {
+        insert_text(buffer, len, cursor, "Ans");
+    }
+    if (insert_text(buffer, len, cursor, "^()")) {
+        --cursor;
+    }
+}
+
 void insert_fraction(char* buffer, int& len, int& cursor) {
     if (insert_text(buffer, len, cursor, "()/()")) {
         cursor -= 4;
@@ -253,6 +262,36 @@ int fraction_end_at(const char* expr, int pos, int end, int& num_start, int& num
 bool move_cursor_horizontal(const char* buffer, int len, int& cursor, int direction);
 void normalize_cursor_to_visible(const char* buffer, int len, int& cursor);
 void ensure_cursor_visible(const char* expr, int len, int cursor, int visible_w, int& scroll_x);
+
+bool delete_blank_fraction_slot(char* buffer, int& len, int& cursor) {
+    int best_start = -1;
+    int best_end = -1;
+    int best_span = 100000;
+    for (int i = 0; i < len; ++i) {
+        int num_start = 0;
+        int num_end = 0;
+        int den_start = 0;
+        int den_end = 0;
+        const int frac_end = fraction_end_at(buffer, i, len, num_start, num_end, den_start, den_end);
+        if (frac_end <= 0) {
+            continue;
+        }
+        const bool in_blank_num = cursor == num_start && num_start == num_end;
+        const bool in_blank_den = cursor == den_start && den_start == den_end;
+        const int span = frac_end - i;
+        if ((in_blank_num || in_blank_den) && span < best_span) {
+            best_start = i;
+            best_end = frac_end;
+            best_span = span;
+        }
+    }
+    if (best_start < 0) {
+        return false;
+    }
+    delete_range(buffer, len, best_start, best_end - best_start);
+    cursor = best_start;
+    return true;
+}
 
 void normalize_cursor(const char* buffer, int len, int& cursor) {
     if (cursor < 0) {
@@ -435,7 +474,7 @@ bool insert_for_key(Key key, char* buffer, int& len, int& cursor) {
         case Key::Subtract: append_or_ans(buffer, len, cursor, "-"); return true;
         case Key::Multiply: append_or_ans(buffer, len, cursor, "*"); return true;
         case Key::Divide: append_or_ans(buffer, len, cursor, "/"); return true;
-        case Key::Power: append_or_ans(buffer, len, cursor, "^"); return true;
+        case Key::Power: insert_power_template(buffer, len, cursor); return true;
         case Key::Square: append_or_ans(buffer, len, cursor, "^2"); return true;
         case Key::Reciprocal: append_or_ans(buffer, len, cursor, "^-1"); return true;
         case Key::LParen: return insert_text(buffer, len, cursor, "(");
@@ -481,7 +520,9 @@ void edit_expression_key(Key key, char* buffer, int& len, int& cursor) {
             move_cursor_horizontal(buffer, len, cursor, 1);
             break;
         case Key::Delete:
-            delete_at(buffer, len, cursor);
+            if (!delete_blank_fraction_slot(buffer, len, cursor)) {
+                delete_at(buffer, len, cursor);
+            }
             break;
         case Key::Back:
             backspace(buffer, len, cursor);
@@ -846,6 +887,23 @@ int font_descent(bool small) {
     return font_h(small) - font_ascent(small);
 }
 
+int superscript_raise(bool parent_small) {
+    return parent_small ? 5 : 7;
+}
+
+int superscript_extra_raise_for_range(const char* expr, int start, int end) {
+    int num_start = 0;
+    int num_end = 0;
+    int den_start = 0;
+    int den_end = 0;
+    const int frac_end = fraction_end_at(expr, start, end, num_start, num_end, den_start, den_end);
+    return frac_end == end ? 3 : 0;
+}
+
+int fraction_bar_offset(bool small) {
+    return small ? -3 : -4;
+}
+
 ExprBox box_from_ascent(int w, int ascent, int descent) {
     return {w, ascent + descent, ascent, descent};
 }
@@ -899,7 +957,7 @@ void add_anchor(LayoutContext* layout, int source, int x, int baseline, int h, C
     CursorAnchor& anchor = layout->anchors[layout->anchor_count++];
     anchor.source = source;
     anchor.x = x;
-    anchor.y = baseline - h + 1;
+    anchor.y = baseline - (h <= kSupH ? font_ascent(true) : font_ascent(false));
     anchor.h = h;
     anchor.region = region;
 }
@@ -937,6 +995,12 @@ void exponent_range(const char* expr, int caret, int end, int& visual_start, int
             source_end = close + 1;
             return;
         }
+        if (end - 1 > visual_start && expr[end - 1] == ')') {
+            visual_start = visual_start + 1;
+            visual_end = end - 1;
+            source_end = end;
+            return;
+        }
     }
     const int call_end = function_call_end(expr, visual_start, end);
     if (call_end > 0) {
@@ -959,6 +1023,9 @@ ExprBox measure_expression_range_impl(const char* expr, int start, int end, bool
 
 ExprBox measure_expression_range_impl(const char* expr, int start, int end, bool small, LayoutContext* layout, CursorRegion region) {
     if (start >= end) {
+        if (region == CursorRegion::Main) {
+            return box_from_ascent(0, font_ascent(small), font_descent(small));
+        }
         const ExprBox box = placeholder_box(small);
         add_node(layout, LayoutKind::Placeholder, start, end, small, box);
         return box;
@@ -977,7 +1044,8 @@ ExprBox measure_expression_range_impl(const char* expr, int start, int end, bool
             const ExprBox num = measure_expression_range_impl(expr, num_start, num_end, true, layout, CursorRegion::Numerator);
             const ExprBox den = measure_expression_range_impl(expr, den_start, den_end, true, layout, CursorRegion::Denominator);
             const int inner_w = num.w > den.w ? num.w : den.w;
-            const ExprBox box = box_from_ascent(inner_w + 10, num.h + 3, den.h + 4);
+            const int bar_offset = fraction_bar_offset(small);
+            const ExprBox box = box_from_ascent(inner_w + 10, num.h + 3 - bar_offset, den.h + 4 + bar_offset);
             add_node(layout, LayoutKind::Fraction, i, frac_end, true, box);
             w += box.w + 2;
             if (box.ascent > ascent) {
@@ -1012,7 +1080,7 @@ ExprBox measure_expression_range_impl(const char* expr, int start, int end, bool
             int source_end = 0;
             exponent_range(expr, i, end, exp_start, exp_end, source_end);
             const ExprBox exp = exp_start == exp_end ? placeholder_box(true) : measure_expression_range_impl(expr, exp_start, exp_end, true, layout, CursorRegion::Exponent);
-            const ExprBox box = box_from_ascent(exp.w, exp.h + 2, 0);
+            const ExprBox box = box_from_ascent(exp.w, exp.ascent + superscript_raise(small) + superscript_extra_raise_for_range(expr, exp_start, exp_end), 0);
             add_node(layout, LayoutKind::Superscript, i, source_end, true, box);
             w += box.w;
             if (box.ascent > ascent) {
@@ -1075,9 +1143,10 @@ void draw_expression_range_impl(Display& display, int x, int baseline, const cha
             const int box_w = inner_w + 10;
             const int num_x = cx + 5 + (inner_w - num.w) / 2;
             const int den_x = cx + 5 + (inner_w - den.w) / 2;
-            draw_expression_range_impl(display, num_x, baseline - 3 - num.descent, expr, num_start, num_end, true, fg, bg);
-            draw_line(display, cx + 2, baseline, cx + box_w - 3, baseline, fg);
-            draw_expression_range_impl(display, den_x, baseline + 4 + den.ascent, expr, den_start, den_end, true, fg, bg);
+            const int bar_y = baseline + fraction_bar_offset(small);
+            draw_expression_range_impl(display, num_x, bar_y - 3 - num.descent, expr, num_start, num_end, true, fg, bg);
+            draw_line(display, cx + 2, bar_y, cx + box_w - 3, bar_y, fg);
+            draw_expression_range_impl(display, den_x, bar_y + 4 + den.ascent, expr, den_start, den_end, true, fg, bg);
             cx += box_w + 2;
             i = frac_end;
             continue;
@@ -1112,7 +1181,7 @@ void draw_expression_range_impl(Display& display, int x, int baseline, const cha
             int source_end = 0;
             exponent_range(expr, i, end, exp_start, exp_end, source_end);
             const ExprBox exp = exp_start == exp_end ? placeholder_box(true) : measure_expression_range_impl(expr, exp_start, exp_end, true, nullptr, CursorRegion::Exponent);
-            const int exp_baseline = baseline - font_ascent(small) + exp.ascent - 1;
+            const int exp_baseline = baseline - superscript_raise(small) - superscript_extra_raise_for_range(expr, exp_start, exp_end);
             if (exp_start == exp_end) {
                 draw_placeholder(display, cx, exp_baseline, true, fg);
             } else {
@@ -1150,8 +1219,9 @@ void emit_anchors_range(LayoutContext& layout, int x, int baseline, const char* 
             const int box_w = inner_w + 10;
             const int num_x = cx + 5 + (inner_w - num.w) / 2;
             const int den_x = cx + 5 + (inner_w - den.w) / 2;
-            emit_anchors_range(layout, num_x, baseline - 3 - num.descent, expr, num_start, num_end, true, CursorRegion::Numerator);
-            emit_anchors_range(layout, den_x, baseline + 4 + den.ascent, expr, den_start, den_end, true, CursorRegion::Denominator);
+            const int bar_y = baseline + fraction_bar_offset(small);
+            emit_anchors_range(layout, num_x, bar_y - 3 - num.descent, expr, num_start, num_end, true, CursorRegion::Numerator);
+            emit_anchors_range(layout, den_x, bar_y + 4 + den.ascent, expr, den_start, den_end, true, CursorRegion::Denominator);
             cx += box_w + 2;
             add_anchor(&layout, frac_end, cx, baseline, font_h(small), region);
             i = frac_end;
@@ -1182,8 +1252,9 @@ void emit_anchors_range(LayoutContext& layout, int x, int baseline, const char* 
             int exp_end = 0;
             int source_end = 0;
             exponent_range(expr, i, end, exp_start, exp_end, source_end);
+            add_anchor(&layout, i, cx, baseline, font_h(small), region);
             const ExprBox exp = exp_start == exp_end ? placeholder_box(true) : measure_expression_range_impl(expr, exp_start, exp_end, true, nullptr, CursorRegion::Exponent);
-            const int exp_baseline = baseline - font_ascent(small) + exp.ascent - 1;
+            const int exp_baseline = baseline - superscript_raise(small) - superscript_extra_raise_for_range(expr, exp_start, exp_end);
             emit_anchors_range(layout, cx, exp_baseline, expr, exp_start, exp_end, true, CursorRegion::Exponent);
             cx += exp.w;
             add_anchor(&layout, source_end, cx, baseline, font_h(small), region);
@@ -1280,7 +1351,9 @@ int draw_expression(Display& display, int x, int y, const char* expr, int cursor
     const int len = static_cast<int>(std::strlen(expr));
     const ExprBox box = measure_expression_range(expr, 0, len);
     const int baseline = y + box.ascent;
-    draw_expression_range_impl(display, x, baseline, expr, 0, len, false, fg, bg);
+    if (len > 0) {
+        draw_expression_range_impl(display, x, baseline, expr, 0, len, false, fg, bg);
+    }
     if (cursor >= 0) {
         LayoutContext layout = build_layout_anchors(expr, len, x, y);
         const int index = anchor_index_for_cursor(layout, cursor);
@@ -1291,22 +1364,34 @@ int draw_expression(Display& display, int x, int y, const char* expr, int cursor
     return box.w;
 }
 
-void draw_input_line(Display& display, const char* prompt, const char* expr, int cursor, int& scroll_x) {
-    const int y = kLcdHeight - kInputH;
+int input_height_for_expression(const char* expr) {
+    const int len = static_cast<int>(std::strlen(expr));
+    const ExprBox box = measure_expression_range(expr, 0, len);
+    int h = box.h + 8;
+    if (h < kInputH) {
+        h = kInputH;
+    }
+    if (h > kLcdHeight - 4) {
+        h = kLcdHeight - 4;
+    }
+    return h;
+}
+
+void draw_input_line(Display& display, const char* prompt, const char* expr, int cursor, int& scroll_x, int input_y, int input_h) {
     const int prompt_w = 24;
     const int expr_x = prompt_w;
     const int visible_w = kLcdWidth - expr_x - 2;
     const int len = static_cast<int>(std::strlen(expr));
     ensure_cursor_visible(expr, len, cursor, visible_w, scroll_x);
     const ExprBox box = measure_expression_range(expr, 0, len);
-    int expr_y = y + 4;
-    if (box.h + 8 < kInputH) {
-        expr_y = y + (kInputH - box.h) / 2;
+    int expr_y = input_y + 4;
+    if (box.h + 8 < input_h) {
+        expr_y = input_y + (input_h - box.h) / 2;
     }
-    fill_rect(display, 0, y, kLcdWidth, kInputH, kWhite);
+    fill_rect(display, 0, input_y, kLcdWidth, input_h, kWhite);
     draw_expression(display, expr_x - scroll_x, expr_y, expr, cursor, kBlack, kWhite);
-    fill_rect(display, 0, y, expr_x, kInputH, kWhite);
-    draw_text_scaled(display, 4, y + 6, prompt, kTextScale, kBlack, kWhite);
+    fill_rect(display, 0, input_y, expr_x, input_h, kWhite);
+    draw_text_scaled(display, 4, input_y + 6, prompt, kTextScale, kBlack, kWhite);
 }
 
 int history_row_height(const HistoryEntry& entry) {
@@ -1317,7 +1402,8 @@ int history_row_height(const HistoryEntry& entry) {
 
 void render_home(Display& display) {
     clear(display, kWhite);
-    const int input_y = kLcdHeight - kInputH;
+    const int input_h = input_height_for_expression(g.home_expr);
+    const int input_y = kLcdHeight - input_h;
     const int selected_entry = g.history_selection >= 0 ? g.history_selection / 2 : 0;
     int first = selected_entry;
     int last = selected_entry - 1;
@@ -1377,7 +1463,7 @@ void render_home(Display& display) {
         }
         y += 4;
     }
-    draw_input_line(display, ">", g.home_expr, g.home_cursor, g.home_expr_scroll_x);
+    draw_input_line(display, ">", g.home_expr, g.home_cursor, g.home_expr_scroll_x, input_y, input_h);
 }
 
 void draw_axes(Display& display) {
@@ -1573,8 +1659,53 @@ bool calc_debug_layout_expression(const char* expression, LayoutDebugInfo& info)
     info.descent = box.descent;
     info.height = box.h;
     info.anchor_count = layout.anchor_count;
+    info.large_text_count = 0;
+    info.small_text_count = 0;
+    info.fraction_count = 0;
+    info.sqrt_count = 0;
+    info.superscript_count = 0;
+    for (int i = 0; i < layout.node_count; ++i) {
+        const LayoutNode& node = layout.nodes[i];
+        switch (node.kind) {
+            case LayoutKind::TextRun:
+                if (node.small) {
+                    ++info.small_text_count;
+                } else {
+                    ++info.large_text_count;
+                }
+                break;
+            case LayoutKind::Fraction: ++info.fraction_count; break;
+            case LayoutKind::Sqrt: ++info.sqrt_count; break;
+            case LayoutKind::Superscript: ++info.superscript_count; break;
+            default: break;
+        }
+    }
     info.overflow = layout.overflow;
     return !layout.overflow;
+}
+
+void calc_debug_set_home_expression(const char* expression, int cursor) {
+    if (expression == nullptr) {
+        expression = "";
+    }
+    copy_string(g.home_expr, sizeof(g.home_expr), expression);
+    g.home_len = static_cast<int>(std::strlen(g.home_expr));
+    g.home_cursor = cursor;
+    normalize_cursor(g.home_expr, g.home_len, g.home_cursor);
+    ensure_cursor_visible(g.home_expr, g.home_len, g.home_cursor, kLcdWidth - 26, g.home_expr_scroll_x);
+    clear_history_selection();
+}
+
+int calc_debug_home_cursor() {
+    return g.home_cursor;
+}
+
+const char* calc_debug_home_expression() {
+    return g.home_expr;
+}
+
+int calc_debug_home_scroll_x() {
+    return g.home_expr_scroll_x;
 }
 
 }  // namespace calc

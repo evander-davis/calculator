@@ -54,12 +54,14 @@ CMAKE_BINARY_DIR = C:\Documents\calculator\build-sdl
 # The main recursive "all" target.
 all: CMakeFiles\calc_core.dir\all
 all: CMakeFiles\calc_core_tests.dir\all
+all: CMakeFiles\calc_visual_verifier.dir\all
 all: CMakeFiles\calc_emulator.dir\all
 .PHONY : all
 
 # The main recursive "codegen" target.
 codegen: CMakeFiles\calc_core.dir\codegen
 codegen: CMakeFiles\calc_core_tests.dir\codegen
+codegen: CMakeFiles\calc_visual_verifier.dir\codegen
 codegen: CMakeFiles\calc_emulator.dir\codegen
 .PHONY : codegen
 
@@ -70,6 +72,7 @@ preinstall:
 # The main recursive "clean" target.
 clean: CMakeFiles\calc_core.dir\clean
 clean: CMakeFiles\calc_core_tests.dir\clean
+clean: CMakeFiles\calc_visual_verifier.dir\clean
 clean: CMakeFiles\calc_emulator.dir\clean
 .PHONY : clean
 
@@ -136,6 +139,38 @@ CMakeFiles\calc_core_tests.dir\codegen:
 CMakeFiles\calc_core_tests.dir\clean:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles\calc_core_tests.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\calc_core_tests.dir\clean
 .PHONY : CMakeFiles\calc_core_tests.dir\clean
+
+#=============================================================================
+# Target rules for target CMakeFiles/calc_visual_verifier.dir
+
+# All Build rule for target.
+CMakeFiles\calc_visual_verifier.dir\all: CMakeFiles\calc_core.dir\all
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\calc_visual_verifier.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\calc_visual_verifier.dir\depend
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\calc_visual_verifier.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\calc_visual_verifier.dir\build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=C:\Documents\calculator\build-sdl\CMakeFiles --progress-num=10,11 "Built target calc_visual_verifier"
+.PHONY : CMakeFiles\calc_visual_verifier.dir\all
+
+# Build rule for subdir invocation for target.
+CMakeFiles\calc_visual_verifier.dir\rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start C:\Documents\calculator\build-sdl\CMakeFiles 7
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Makefile2 /nologo -$(MAKEFLAGS) CMakeFiles\calc_visual_verifier.dir\all
+	$(CMAKE_COMMAND) -E cmake_progress_start C:\Documents\calculator\build-sdl\CMakeFiles 0
+.PHONY : CMakeFiles\calc_visual_verifier.dir\rule
+
+# Convenience name for target.
+calc_visual_verifier: CMakeFiles\calc_visual_verifier.dir\rule
+.PHONY : calc_visual_verifier
+
+# codegen rule for target.
+CMakeFiles\calc_visual_verifier.dir\codegen:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\calc_visual_verifier.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\calc_visual_verifier.dir\codegen
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=C:\Documents\calculator\build-sdl\CMakeFiles --progress-num=10,11 "Finished codegen for target calc_visual_verifier"
+.PHONY : CMakeFiles\calc_visual_verifier.dir\codegen
+
+# clean rule for target.
+CMakeFiles\calc_visual_verifier.dir\clean:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\calc_visual_verifier.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\calc_visual_verifier.dir\clean
+.PHONY : CMakeFiles\calc_visual_verifier.dir\clean
 
 #=============================================================================
 # Target rules for target CMakeFiles/calc_emulator.dir

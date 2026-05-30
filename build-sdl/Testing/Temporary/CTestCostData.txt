@@ -1,2 +1,3 @@
-calc_core_tests 25 0.00121094
+calc_core_tests 38 0.000820592
+calc_visual_verifier 11 0.0625564
 ---

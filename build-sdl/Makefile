@@ -142,6 +142,19 @@ calc_core_tests\fast:
 .PHONY : calc_core_tests\fast
 
 #=============================================================================
+# Target rules for targets named calc_visual_verifier
+
+# Build rule for target.
+calc_visual_verifier: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Makefile2 /nologo -$(MAKEFLAGS) calc_visual_verifier
+.PHONY : calc_visual_verifier
+
+# fast build rule for target.
+calc_visual_verifier\fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\calc_visual_verifier.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\calc_visual_verifier.dir\build
+.PHONY : calc_visual_verifier\fast
+
+#=============================================================================
 # Target rules for targets named calc_emulator
 
 # Build rule for target.
@@ -298,6 +311,30 @@ tests\core_tests.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles\calc_core_tests.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\calc_core_tests.dir\tests\core_tests.cpp.s
 .PHONY : tests\core_tests.cpp.s
 
+tests\visual_verifier.obj: tests\visual_verifier.cpp.obj
+.PHONY : tests\visual_verifier.obj
+
+# target to build an object file
+tests\visual_verifier.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\calc_visual_verifier.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\calc_visual_verifier.dir\tests\visual_verifier.cpp.obj
+.PHONY : tests\visual_verifier.cpp.obj
+
+tests\visual_verifier.i: tests\visual_verifier.cpp.i
+.PHONY : tests\visual_verifier.i
+
+# target to preprocess a source file
+tests\visual_verifier.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\calc_visual_verifier.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\calc_visual_verifier.dir\tests\visual_verifier.cpp.i
+.PHONY : tests\visual_verifier.cpp.i
+
+tests\visual_verifier.s: tests\visual_verifier.cpp.s
+.PHONY : tests\visual_verifier.s
+
+# target to generate assembly for a file
+tests\visual_verifier.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\calc_visual_verifier.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\calc_visual_verifier.dir\tests\visual_verifier.cpp.s
+.PHONY : tests\visual_verifier.cpp.s
+
 # Help Target
 help:
 	@echo The following are some of the valid targets for this Makefile:
@@ -310,6 +347,7 @@ help:
 	@echo ... calc_core
 	@echo ... calc_core_tests
 	@echo ... calc_emulator
+	@echo ... calc_visual_verifier
 	@echo ... src/core/calculator.obj
 	@echo ... src/core/calculator.i
 	@echo ... src/core/calculator.s
@@ -328,6 +366,9 @@ help:
 	@echo ... tests/core_tests.obj
 	@echo ... tests/core_tests.i
 	@echo ... tests/core_tests.s
+	@echo ... tests/visual_verifier.obj
+	@echo ... tests/visual_verifier.i
+	@echo ... tests/visual_verifier.s
 .PHONY : help
 
 
