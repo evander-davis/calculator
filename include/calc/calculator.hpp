@@ -101,13 +101,15 @@ enum class Key : std::uint8_t {
     Math,
     Apps,
     Program,
-    Reciprocal,
+    NthRoot,
+    FracDecimal,
     Square,
     Comma,
     Store,
     On,
     Negate,
-    Fraction
+    Fraction,
+    Imaginary
 };
 
 enum class Screen : std::uint8_t {
@@ -177,13 +179,17 @@ enum class EvalError : std::uint8_t {
 
 struct EvalContext {
     CalcReal variables[26];
+    CalcReal variable_imag[26];
     bool variable_valid[26];
     CalcReal ans;
+    CalcReal ans_imag;
+    bool degree_mode;
 };
 
 struct EvalResult {
     bool ok;
     CalcReal value;
+    CalcReal imag;
     EvalError error;
     int error_pos;
 };
@@ -232,5 +238,9 @@ void calc_debug_set_home_expression(const char* expression, int cursor);
 const char* calc_debug_home_expression();
 int calc_debug_home_cursor();
 int calc_debug_home_scroll_x();
+int calc_debug_history_selection();
+int calc_debug_history_first_entry();
+bool calc_debug_angle_degrees();
+bool calc_debug_fraction_output();
 
 }  // namespace calc

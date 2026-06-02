@@ -188,7 +188,7 @@ std::vector<Button> make_buttons() {
     add_button(buttons, 0, 4, "GRAPH", "TABLE", "F5", calc::Key::Graph);
     add_button(buttons, 1, 0, "2ND", "", "", calc::Key::Second);
     add_button(buttons, 1, 1, "n/d", "MODE", "", calc::Key::Fraction);
-    add_button(buttons, 1, 4, "DEL", "INS", "", calc::Key::Delete);
+    add_button(buttons, 1, 4, "DEL", "", "", calc::Key::Delete);
     add_button(buttons, 2, 0, "ALPHA", "A-LOCK", "", calc::Key::Alpha);
     add_button(buttons, 2, 1, "X,T,t,n", "LINK", "", calc::Key::X);
     add_button(buttons, 2, 4, "STAT", "LIST", "", calc::Key::Stat);
@@ -197,12 +197,12 @@ std::vector<Button> make_buttons() {
     add_button(buttons, 3, 2, "PRGM", "DRAW", "C", calc::Key::Program);
     add_button(buttons, 3, 3, "VARS", "DISTR", "", calc::Key::Vars);
     add_button(buttons, 3, 4, "CLEAR", "", "", calc::Key::Clear);
-    add_button(buttons, 4, 0, "x^-1", "MATRIX", "D", calc::Key::Reciprocal);
+    add_button(buttons, 4, 0, "^", "ROOT", "D", calc::Key::Power);
     add_button(buttons, 4, 1, "SIN", "SIN^-1", "E", calc::Key::Sin);
     add_button(buttons, 4, 2, "COS", "COS^-1", "F", calc::Key::Cos);
     add_button(buttons, 4, 3, "TAN", "TAN^-1", "G", calc::Key::Tan);
-    add_button(buttons, 4, 4, "^", "PI", "H", calc::Key::Power);
-    add_button(buttons, 5, 0, "x^2", "SQRT", "", calc::Key::Square);
+    add_button(buttons, 4, 4, "<>", "PI", "H", calc::Key::FracDecimal);
+    add_button(buttons, 5, 0, "x^2", "SQRT", "I", calc::Key::Square);
     add_button(buttons, 5, 1, ",", "EE", "J", calc::Key::Comma);
     add_button(buttons, 5, 2, "(", "{", "K", calc::Key::LParen);
     add_button(buttons, 5, 3, ")", "}", "L", calc::Key::RParen);
@@ -224,7 +224,7 @@ std::vector<Button> make_buttons() {
     add_button(buttons, 8, 4, "+", "MEM", "\"", calc::Key::Add);
     add_button(buttons, 9, 0, "ON", "OFF", "", calc::Key::On);
     add_button(buttons, 9, 1, "0", "CATALOG", "SPACE", calc::Key::Digit0);
-    add_button(buttons, 9, 2, ".", "I", ":", calc::Key::Dot);
+    add_button(buttons, 9, 2, ".", "", "i", calc::Key::Dot);
     add_button(buttons, 9, 3, "(-)", "ANS", "?", calc::Key::Negate);
     add_button(buttons, 9, 4, "ENTER", "ENTRY", "SOLVE", calc::Key::Enter);
 

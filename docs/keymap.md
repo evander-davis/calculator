@@ -16,7 +16,7 @@ The emulator supports clickable buttons and host keyboard shortcuts.
 - Digits, `.`, `+`, `-`, `*`, `/`, `^`, `(`, `)`: expression input
 - `Enter`: evaluate or accept
 - `Backspace`: delete previous character
-- `Delete`: delete current character
+- `Delete`: delete previous character
 - `Esc` or `C`: clear
 - Arrow keys: cursor movement, graph pan, or window selection/editing
 
@@ -29,4 +29,4 @@ The emulator supports clickable buttons and host keyboard shortcuts.
 - `X`: insert graph variable `X`
 
 Clickable buttons expose additional functions such as `cos`, `sqrt`, `log`,
-inverse trig, `Ans`, constants, and variable letters.
+inverse trig, `Ans`, constants, variable letters, and the imaginary unit `i`.

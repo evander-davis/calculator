@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace calc {
@@ -48,6 +49,7 @@ struct CalculatorState {
     HistoryEntry history[kHistoryCapacity];
     int history_count;
     int window_selection;
+    int settings_selection;
     std::uint32_t last_tick_ms;
     bool cursor_on;
     Key last_key;
@@ -55,6 +57,8 @@ struct CalculatorState {
     bool alpha_active;
     int history_selection;
     int edit_cursor_before_history;
+    int history_first_entry;
+    bool fraction_output;
 };
 
 CalculatorState g{};
@@ -158,6 +162,7 @@ int expression_line_count() {
 
 void clear_history_selection() {
     g.history_selection = -1;
+    g.history_first_entry = 0;
 }
 
 bool insert_text(char* buffer, int& len, int& cursor, const char* text) {
@@ -178,11 +183,6 @@ bool insert_text(char* buffer, int& len, int& cursor, const char* text) {
     cursor += add;
     buffer[len] = '\0';
     return true;
-}
-
-bool insert_text_at(char* buffer, int& len, int pos, const char* text) {
-    int cursor = pos;
-    return insert_text(buffer, len, cursor, text);
 }
 
 void delete_range(char* buffer, int& len, int pos, int count) {
@@ -228,6 +228,16 @@ void insert_power_template(char* buffer, int& len, int& cursor) {
     }
 }
 
+void insert_power_value(char* buffer, int& len, int& cursor, const char* value) {
+    insert_power_template(buffer, len, cursor);
+    if (!insert_text(buffer, len, cursor, value)) {
+        return;
+    }
+    if (cursor < len && buffer[cursor] == ')') {
+        ++cursor;
+    }
+}
+
 void insert_fraction(char* buffer, int& len, int& cursor) {
     if (insert_text(buffer, len, cursor, "()/()")) {
         cursor -= 4;
@@ -237,9 +247,27 @@ void insert_fraction(char* buffer, int& len, int& cursor) {
     }
 }
 
+void insert_nth_root(char* buffer, int& len, int& cursor) {
+    if (insert_text(buffer, len, cursor, "root()()")) {
+        cursor -= 4;
+        if (cursor < 5) {
+            cursor = 5;
+        }
+    }
+}
+
 void backspace(char* buffer, int& len, int& cursor) {
     if (cursor <= 0 || len <= 0) {
         return;
+    }
+    const char* atomic_functions[] = {"sin(", "cos(", "tan(", "asin(", "acos(", "atan("};
+    for (const char* name : atomic_functions) {
+        const int name_len = static_cast<int>(std::strlen(name));
+        if (cursor >= name_len && std::strncmp(buffer + cursor - name_len, name, name_len) == 0) {
+            delete_range(buffer, len, cursor - name_len, name_len);
+            cursor -= name_len;
+            return;
+        }
     }
     for (int i = cursor - 1; i < len; ++i) {
         buffer[i] = buffer[i + 1];
@@ -248,20 +276,14 @@ void backspace(char* buffer, int& len, int& cursor) {
     --len;
 }
 
-void delete_at(char* buffer, int& len, int& cursor) {
-    if (cursor >= len || len <= 0) {
-        return;
-    }
-    for (int i = cursor; i < len; ++i) {
-        buffer[i] = buffer[i + 1];
-    }
-    --len;
-}
-
 int fraction_end_at(const char* expr, int pos, int end, int& num_start, int& num_end, int& den_start, int& den_end);
+int nth_root_end_at(const char* expr, int pos, int end, int& index_start, int& index_end, int& radicand_start, int& radicand_end);
+void exponent_range(const char* expr, int caret, int end, int& visual_start, int& visual_end, int& source_end);
 bool move_cursor_horizontal(const char* buffer, int len, int& cursor, int direction);
 void normalize_cursor_to_visible(const char* buffer, int len, int& cursor);
 void ensure_cursor_visible(const char* expr, int len, int cursor, int visible_w, int& scroll_x);
+int history_row_height(const HistoryEntry& entry);
+void ensure_history_selection_visible();
 
 bool delete_blank_fraction_slot(char* buffer, int& len, int& cursor) {
     int best_start = -1;
@@ -289,6 +311,86 @@ bool delete_blank_fraction_slot(char* buffer, int& len, int& cursor) {
         return false;
     }
     delete_range(buffer, len, best_start, best_end - best_start);
+    cursor = best_start;
+    return true;
+}
+
+bool delete_blank_exponent_slot(char* buffer, int& len, int& cursor) {
+    int best_start = -1;
+    int best_span = 100000;
+    for (int i = 0; i < len; ++i) {
+        if (buffer[i] != '^') {
+            continue;
+        }
+        int exp_start = 0;
+        int exp_end = 0;
+        int source_end = 0;
+        exponent_range(buffer, i, len, exp_start, exp_end, source_end);
+        const int span = source_end - i;
+        if (cursor == exp_start && exp_start == exp_end && span < best_span) {
+            best_start = i;
+            best_span = span;
+        }
+    }
+    if (best_start < 0) {
+        return false;
+    }
+    delete_range(buffer, len, best_start, best_span);
+    cursor = best_start;
+    return true;
+}
+
+bool delete_nested_left(char* buffer, int& len, int& cursor) {
+    int best_start = -1;
+    int best_span = 100000;
+    for (int i = 0; i < len; ++i) {
+        int num_start = 0;
+        int num_end = 0;
+        int den_start = 0;
+        int den_end = 0;
+        const int frac_end = fraction_end_at(buffer, i, len, num_start, num_end, den_start, den_end);
+        if (frac_end == cursor) {
+            const int span = frac_end - i;
+            if (span < best_span) {
+                best_start = i;
+                best_span = span;
+            }
+        }
+    }
+    for (int i = 0; i < len; ++i) {
+        int index_start = 0;
+        int index_end = 0;
+        int radicand_start = 0;
+        int radicand_end = 0;
+        const int root_end = nth_root_end_at(buffer, i, len, index_start, index_end, radicand_start, radicand_end);
+        if (root_end == cursor) {
+            const int span = root_end - i;
+            if (span < best_span) {
+                best_start = i;
+                best_span = span;
+            }
+        }
+    }
+    for (int i = 0; i < len; ++i) {
+        if (buffer[i] != '^') {
+            continue;
+        }
+        int exp_start = 0;
+        int exp_end = 0;
+        int source_end = 0;
+        exponent_range(buffer, i, len, exp_start, exp_end, source_end);
+        if (source_end == cursor) {
+            const int span = source_end - i;
+            if (span < best_span) {
+                best_start = i;
+                best_span = span;
+            }
+        }
+    }
+    if (best_start < 0) {
+        return false;
+    }
+    delete_range(buffer, len, best_start, best_span);
     cursor = best_start;
     return true;
 }
@@ -335,6 +437,50 @@ bool move_fraction_vertical(const char* buffer, int len, int& cursor, Key key) {
                     best_span = span;
                     best_cursor = num_start + offset;
                 }
+            }
+        }
+    }
+    if (best_span < 100000) {
+        cursor = best_cursor;
+        normalize_cursor(buffer, len, cursor);
+        return true;
+    }
+    return false;
+}
+
+bool move_nth_root_vertical(const char* buffer, int len, int& cursor, Key key) {
+    int best_cursor = cursor;
+    int best_span = 100000;
+    for (int i = 0; i < len; ++i) {
+        int index_start = 0;
+        int index_end = 0;
+        int radicand_start = 0;
+        int radicand_end = 0;
+        const int root_end = nth_root_end_at(buffer, i, len, index_start, index_end, radicand_start, radicand_end);
+        if (root_end <= 0) {
+            continue;
+        }
+        const int span = root_end - i;
+        if (key == Key::Down && cursor >= index_start && cursor <= index_end) {
+            int offset = cursor - index_start;
+            const int rad_len = radicand_end - radicand_start;
+            if (offset > rad_len) {
+                offset = rad_len;
+            }
+            if (span < best_span) {
+                best_span = span;
+                best_cursor = radicand_start + offset;
+            }
+        }
+        if (key == Key::Up && cursor >= radicand_start && cursor <= radicand_end) {
+            int offset = cursor - radicand_start;
+            const int index_len = index_end - index_start;
+            if (offset > index_len) {
+                offset = index_len;
+            }
+            if (span < best_span) {
+                best_span = span;
+                best_cursor = index_start + offset;
             }
         }
     }
@@ -409,6 +555,222 @@ void format_value(CalcReal value, char* out, std::size_t size) {
     append_fixed_abs(out, size, pos, value, 6);
 }
 
+bool near_zero(CalcReal value) {
+    return std::fabs(value) < real(0.0000000005);
+}
+
+bool near_one(CalcReal value) {
+    return std::fabs(std::fabs(value) - real(1.0)) < real(0.0000000005);
+}
+
+void append_imaginary_part(char* out, std::size_t size, std::size_t& pos, CalcReal imag_part, bool include_plus) {
+    if (imag_part < real(0.0)) {
+        append_char(out, size, pos, '-');
+    } else if (include_plus) {
+        append_char(out, size, pos, '+');
+    }
+    if (!near_one(imag_part)) {
+        append_fixed_abs(out, size, pos, imag_part, 6);
+    }
+    append_char(out, size, pos, 'i');
+}
+
+void format_complex_value(CalcReal real_part, CalcReal imag_part, char* out, std::size_t size) {
+    if (near_zero(imag_part)) {
+        format_value(real_part, out, size);
+        return;
+    }
+    if (near_zero(real_part)) {
+        std::size_t pos = 0;
+        append_imaginary_part(out, size, pos, imag_part, false);
+        return;
+    }
+
+    format_value(real_part, out, size);
+    std::size_t pos = std::strlen(out);
+    append_imaginary_part(out, size, pos, imag_part, true);
+}
+
+long long abs_ll(long long value) {
+    return value < 0 ? -value : value;
+}
+
+long long gcd_ll(long long a, long long b) {
+    a = abs_ll(a);
+    b = abs_ll(b);
+    while (b != 0) {
+        const long long r = a % b;
+        a = b;
+        b = r;
+    }
+    return a == 0 ? 1 : a;
+}
+
+bool format_fraction_approx(CalcReal value, char* out, std::size_t size) {
+    constexpr int kMaxDen = 10000;
+    if (!std::isfinite(value)) {
+        return false;
+    }
+    long long best_num = 0;
+    long long best_den = 1;
+    CalcReal best_err = std::fabs(value);
+    for (int den = 1; den <= kMaxDen; ++den) {
+        const CalcReal scaled = value * static_cast<CalcReal>(den);
+        const long long num = static_cast<long long>(scaled >= real(0.0) ? std::floor(scaled + real(0.5))
+                                                                         : std::ceil(scaled - real(0.5)));
+        const CalcReal err = std::fabs(value - static_cast<CalcReal>(num) / static_cast<CalcReal>(den));
+        if (err < best_err) {
+            best_err = err;
+            best_num = num;
+            best_den = den;
+            if (err < real(0.0000000005)) {
+                break;
+            }
+        }
+    }
+    const long long div = gcd_ll(best_num, best_den);
+    best_num /= div;
+    best_den /= div;
+    if (best_den == 1) {
+        std::snprintf(out, size, "%lld", best_num);
+    } else {
+        std::snprintf(out, size, "(%lld)/(%lld)", best_num, best_den);
+    }
+    return true;
+}
+
+bool format_surd_approx(CalcReal value, char* out, std::size_t size) {
+    if (!std::isfinite(value) || near_zero(value)) {
+        return false;
+    }
+    const bool negative = value < real(0.0);
+    const CalcReal target = negative ? -value : value;
+    int best_coeff = 0;
+    int best_rad = 0;
+    int best_den = 1;
+    CalcReal best_err = real(0.00000001);
+    for (int rad = 2; rad <= 32; ++rad) {
+        const int root = static_cast<int>(std::sqrt(static_cast<CalcReal>(rad)) + real(0.5));
+        if (root * root == rad) {
+            continue;
+        }
+        const CalcReal sqrt_rad = std::sqrt(static_cast<CalcReal>(rad));
+        for (int den = 1; den <= 16; ++den) {
+            for (int coeff = 1; coeff <= 16; ++coeff) {
+                const CalcReal candidate = static_cast<CalcReal>(coeff) * sqrt_rad / static_cast<CalcReal>(den);
+                const CalcReal err = std::fabs(target - candidate);
+                if (err < best_err) {
+                    best_err = err;
+                    best_coeff = coeff;
+                    best_rad = rad;
+                    best_den = den;
+                }
+            }
+        }
+    }
+    if (best_coeff == 0) {
+        return false;
+    }
+    const long long div = gcd_ll(best_coeff, best_den);
+    best_coeff = static_cast<int>(best_coeff / div);
+    best_den = static_cast<int>(best_den / div);
+    const char* sign = negative ? "-" : "";
+    if (best_den == 1) {
+        if (best_coeff == 1) {
+            std::snprintf(out, size, "%ssqrt(%d)", sign, best_rad);
+        } else {
+            std::snprintf(out, size, "%s%d*sqrt(%d)", sign, best_coeff, best_rad);
+        }
+    } else {
+        if (best_coeff == 1) {
+            std::snprintf(out, size, "%s(sqrt(%d))/(%d)", sign, best_rad, best_den);
+        } else {
+            std::snprintf(out, size, "%s(%d*sqrt(%d))/(%d)", sign, best_coeff, best_rad, best_den);
+        }
+    }
+    return true;
+}
+
+void format_fraction_mode_part(CalcReal value, char* out, std::size_t size) {
+    if (!format_surd_approx(value, out, size) && !format_fraction_approx(value, out, size)) {
+        format_value(value, out, size);
+    }
+}
+
+void append_fraction_mode_imaginary(char* out, std::size_t size, std::size_t& pos, CalcReal imag_part, bool include_plus) {
+    if (imag_part < real(0.0)) {
+        append_char(out, size, pos, '-');
+    } else if (include_plus) {
+        append_char(out, size, pos, '+');
+    }
+    const CalcReal magnitude = imag_part < real(0.0) ? -imag_part : imag_part;
+    if (!near_one(magnitude)) {
+        char coeff[32]{};
+        format_fraction_mode_part(magnitude, coeff, sizeof(coeff));
+        append_string(out, size, pos, coeff);
+    }
+    append_char(out, size, pos, 'i');
+}
+
+void format_fraction_mode_result(const EvalResult& result, char* out, std::size_t size) {
+    if (near_zero(result.imag)) {
+        format_fraction_mode_part(result.value, out, size);
+        return;
+    }
+    if (near_zero(result.value)) {
+        std::size_t pos = 0;
+        append_fraction_mode_imaginary(out, size, pos, result.imag, false);
+        return;
+    }
+    char real_text[32]{};
+    format_fraction_mode_part(result.value, real_text, sizeof(real_text));
+    copy_string(out, size, real_text);
+    std::size_t pos = std::strlen(out);
+    append_fraction_mode_imaginary(out, size, pos, result.imag, true);
+}
+
+bool whole_fraction_expression(const char* source) {
+    int num_start = 0;
+    int num_end = 0;
+    int den_start = 0;
+    int den_end = 0;
+    const int len = static_cast<int>(std::strlen(source));
+    return fraction_end_at(source, 0, len, num_start, num_end, den_start, den_end) == len;
+}
+
+void toggle_fraction_decimal() {
+    const char* source = g.home_len > 0 ? g.home_expr : (g.history_count > 0 ? g.history[0].result : nullptr);
+    if (source == nullptr || source[0] == '\0') {
+        return;
+    }
+    EvalContext copy = g.eval;
+    EvalResult result = evaluate_expression(source, copy);
+    if (!result.ok || !near_zero(result.imag)) {
+        return;
+    }
+    char text[kExpressionCapacity]{};
+    if (whole_fraction_expression(source) || std::strstr(source, "sqrt(") != nullptr) {
+        format_value(result.value, text, sizeof(text));
+    } else if (format_surd_approx(result.value, text, sizeof(text))) {
+        // Prefer compact exact-looking radicals for common trig values.
+    } else if (!format_fraction_approx(result.value, text, sizeof(text))) {
+        return;
+    }
+    copy_string(g.home_expr, sizeof(g.home_expr), text);
+    g.home_len = static_cast<int>(std::strlen(g.home_expr));
+    g.home_cursor = g.home_len;
+    g.home_expr_scroll_x = 0;
+    clear_history_selection();
+}
+
+void format_result_value(const EvalResult& result, char* out, std::size_t size) {
+    if (g.fraction_output) {
+        format_fraction_mode_result(result, out, size);
+        return;
+    }
+    format_complex_value(result.value, result.imag, out, size);
+}
+
 const char* selected_history_text() {
     if (g.history_selection < 0 || g.history_selection >= expression_line_count()) {
         return nullptr;
@@ -448,7 +810,7 @@ void evaluate_home() {
     EvalResult result = evaluate_expression(expression, g.eval);
     char formatted[32]{};
     if (result.ok) {
-        format_value(result.value, formatted, sizeof(formatted));
+        format_result_value(result, formatted, sizeof(formatted));
         push_history(expression, formatted, false);
         reset_home_expression();
     } else {
@@ -475,8 +837,8 @@ bool insert_for_key(Key key, char* buffer, int& len, int& cursor) {
         case Key::Multiply: append_or_ans(buffer, len, cursor, "*"); return true;
         case Key::Divide: append_or_ans(buffer, len, cursor, "/"); return true;
         case Key::Power: insert_power_template(buffer, len, cursor); return true;
-        case Key::Square: append_or_ans(buffer, len, cursor, "^2"); return true;
-        case Key::Reciprocal: append_or_ans(buffer, len, cursor, "^-1"); return true;
+        case Key::Square: insert_power_value(buffer, len, cursor, "2"); return true;
+        case Key::NthRoot: insert_nth_root(buffer, len, cursor); return true;
         case Key::LParen: return insert_text(buffer, len, cursor, "(");
         case Key::RParen: return insert_text(buffer, len, cursor, ")");
         case Key::Comma: return insert_text(buffer, len, cursor, ",");
@@ -497,6 +859,7 @@ bool insert_for_key(Key key, char* buffer, int& len, int& cursor) {
         case Key::Pi: return insert_text(buffer, len, cursor, "pi");
         case Key::ConstE: return insert_text(buffer, len, cursor, "e");
         case Key::X: return insert_text(buffer, len, cursor, "X");
+        case Key::Imaginary: return insert_text(buffer, len, cursor, "i");
         default: break;
     }
 
@@ -509,7 +872,8 @@ bool insert_for_key(Key key, char* buffer, int& len, int& cursor) {
 }
 
 void edit_expression_key(Key key, char* buffer, int& len, int& cursor) {
-    if ((key == Key::Up || key == Key::Down) && move_fraction_vertical(buffer, len, cursor, key)) {
+    if ((key == Key::Up || key == Key::Down) &&
+        (move_fraction_vertical(buffer, len, cursor, key) || move_nth_root_vertical(buffer, len, cursor, key))) {
         return;
     }
     switch (key) {
@@ -520,8 +884,9 @@ void edit_expression_key(Key key, char* buffer, int& len, int& cursor) {
             move_cursor_horizontal(buffer, len, cursor, 1);
             break;
         case Key::Delete:
-            if (!delete_blank_fraction_slot(buffer, len, cursor)) {
-                delete_at(buffer, len, cursor);
+            if (!delete_blank_fraction_slot(buffer, len, cursor) && !delete_blank_exponent_slot(buffer, len, cursor) &&
+                !delete_nested_left(buffer, len, cursor)) {
+                backspace(buffer, len, cursor);
             }
             break;
         case Key::Back:
@@ -564,10 +929,11 @@ Key second_key(Key key) {
         case Key::Negate: return Key::Ans;
         case Key::Fraction: return Key::Mode;
         case Key::Square: return Key::Sqrt;
+        case Key::Power: return Key::NthRoot;
         case Key::Sin: return Key::ASin;
         case Key::Cos: return Key::ACos;
         case Key::Tan: return Key::ATan;
-        case Key::Power: return Key::Pi;
+        case Key::FracDecimal: return Key::Pi;
         case Key::Divide: return Key::ConstE;
         default: return key;
     }
@@ -578,12 +944,13 @@ Key alpha_key(Key key) {
         case Key::Math: return Key::LetterA;
         case Key::Apps: return Key::LetterB;
         case Key::Program: return Key::LetterC;
-        case Key::Reciprocal: return Key::LetterD;
+        case Key::Power: return Key::LetterD;
         case Key::Sin: return Key::LetterE;
         case Key::Cos: return Key::LetterF;
         case Key::Tan: return Key::LetterG;
-        case Key::Power: return Key::LetterH;
-        case Key::Dot: return Key::LetterI;
+        case Key::FracDecimal: return Key::LetterH;
+        case Key::Square: return Key::LetterI;
+        case Key::Dot: return Key::Imaginary;
         case Key::Comma: return Key::LetterJ;
         case Key::LParen: return Key::LetterK;
         case Key::RParen: return Key::LetterL;
@@ -643,7 +1010,8 @@ void handle_global_key(Key key) {
 
 void handle_home_key(Key key) {
     if (key == Key::Up || key == Key::Down) {
-        if (move_fraction_vertical(g.home_expr, g.home_len, g.home_cursor, key)) {
+        if (move_fraction_vertical(g.home_expr, g.home_len, g.home_cursor, key) ||
+            move_nth_root_vertical(g.home_expr, g.home_len, g.home_cursor, key)) {
             clear_history_selection();
             ensure_cursor_visible(g.home_expr, g.home_len, g.home_cursor, kLcdWidth - 26, g.home_expr_scroll_x);
             return;
@@ -668,10 +1036,16 @@ void handle_home_key(Key key) {
                 clear_history_selection();
             }
         }
+        ensure_history_selection_visible();
         return;
     }
     if (key == Key::Enter) {
         evaluate_home();
+        return;
+    }
+    if (key == Key::FracDecimal) {
+        toggle_fraction_decimal();
+        ensure_cursor_visible(g.home_expr, g.home_len, g.home_cursor, kLcdWidth - 26, g.home_expr_scroll_x);
         return;
     }
     if (key == Key::Clear && g.home_len == 0) {
@@ -738,6 +1112,47 @@ void handle_window_key(Key key) {
     }
     if (g.window.ymax <= g.window.ymin + real(0.1)) {
         g.window.ymax = g.window.ymin + real(0.1);
+    }
+}
+
+void handle_settings_key(Key key) {
+    switch (key) {
+        case Key::Up:
+            if (g.settings_selection > 0) {
+                --g.settings_selection;
+            }
+            break;
+        case Key::Down:
+            if (g.settings_selection < 1) {
+                ++g.settings_selection;
+            }
+            break;
+        case Key::Left:
+            if (g.settings_selection == 0) {
+                g.eval.degree_mode = false;
+            } else {
+                g.fraction_output = false;
+            }
+            break;
+        case Key::Right:
+            if (g.settings_selection == 0) {
+                g.eval.degree_mode = true;
+            } else {
+                g.fraction_output = true;
+            }
+            break;
+        case Key::Enter:
+            if (g.settings_selection == 0) {
+                g.eval.degree_mode = !g.eval.degree_mode;
+            } else {
+                g.fraction_output = !g.fraction_output;
+            }
+            break;
+        case Key::Clear:
+            g.screen = Screen::Home;
+            break;
+        default:
+            break;
     }
 }
 
@@ -812,6 +1227,27 @@ int fraction_end_at(const char* expr, int pos, int end, int& num_start, int& num
     return second_close + 1;
 }
 
+int nth_root_end_at(const char* expr, int pos, int end, int& index_start, int& index_end, int& radicand_start, int& radicand_end) {
+    if (pos + 6 > end || !starts_with_at(expr, pos, "root(")) {
+        return -1;
+    }
+    const int first_open = pos + 4;
+    const int first_close = matching_paren(expr, first_open, end);
+    if (first_close < 0 || first_close + 1 >= end || expr[first_close + 1] != '(') {
+        return -1;
+    }
+    const int second_open = first_close + 1;
+    const int second_close = matching_paren(expr, second_open, end);
+    if (second_close < 0) {
+        return -1;
+    }
+    index_start = first_open + 1;
+    index_end = first_close;
+    radicand_start = second_open + 1;
+    radicand_end = second_close;
+    return second_close + 1;
+}
+
 struct ExprBox {
     int w;
     int h;
@@ -823,6 +1259,7 @@ enum class LayoutKind : std::uint8_t {
     Row,
     TextRun,
     Fraction,
+    NthRoot,
     Sqrt,
     Superscript,
     StoreArrow,
@@ -834,7 +1271,8 @@ enum class CursorRegion : std::uint8_t {
     Numerator,
     Denominator,
     Exponent,
-    Radical
+    Radical,
+    RootIndex
 };
 
 struct LayoutNode {
@@ -980,6 +1418,58 @@ int function_call_end(const char* expr, int start, int end) {
     return -1;
 }
 
+const char* inverse_trig_label_at(const char* expr, int start, int end, int& source_end) {
+    source_end = start;
+    if (start + 5 > end) {
+        return nullptr;
+    }
+    if (starts_with_at(expr, start, "asin(")) {
+        source_end = start + 5;
+        return "SIN";
+    }
+    if (starts_with_at(expr, start, "acos(")) {
+        source_end = start + 5;
+        return "COS";
+    }
+    if (starts_with_at(expr, start, "atan(")) {
+        source_end = start + 5;
+        return "TAN";
+    }
+    return nullptr;
+}
+
+const char* standard_trig_label_at(const char* expr, int start, int end, int& source_end) {
+    source_end = start;
+    if (start + 4 > end) {
+        return nullptr;
+    }
+    if (starts_with_at(expr, start, "sin(")) {
+        source_end = start + 4;
+        return "SIN";
+    }
+    if (starts_with_at(expr, start, "cos(")) {
+        source_end = start + 4;
+        return "COS";
+    }
+    if (starts_with_at(expr, start, "tan(")) {
+        source_end = start + 4;
+        return "TAN";
+    }
+    return nullptr;
+}
+
+ExprBox standard_trig_prefix_box(bool small) {
+    return box_from_ascent(4 * font_w(small), font_ascent(small), font_descent(small));
+}
+
+ExprBox inverse_trig_prefix_box(bool small) {
+    const ExprBox exp = box_from_ascent(2 * font_w(true), font_ascent(true), font_descent(true));
+    const int ascent = exp.ascent + superscript_raise(small) > font_ascent(small)
+                           ? exp.ascent + superscript_raise(small)
+                           : font_ascent(small);
+    return box_from_ascent(4 * font_w(small) + exp.w, ascent, font_descent(small));
+}
+
 void exponent_range(const char* expr, int caret, int end, int& visual_start, int& visual_end, int& source_end) {
     visual_start = caret + 1;
     visual_end = visual_start;
@@ -1039,6 +1529,27 @@ ExprBox measure_expression_range_impl(const char* expr, int start, int end, bool
         int num_end = 0;
         int den_start = 0;
         int den_end = 0;
+        int index_start = 0;
+        int index_end = 0;
+        int radicand_start = 0;
+        int radicand_end = 0;
+        const int root_end = nth_root_end_at(expr, i, end, index_start, index_end, radicand_start, radicand_end);
+        if (root_end > 0) {
+            const ExprBox index = measure_expression_range_impl(expr, index_start, index_end, true, layout, CursorRegion::RootIndex);
+            const ExprBox radicand = measure_expression_range_impl(expr, radicand_start, radicand_end, small, layout, CursorRegion::Radical);
+            const int index_w = index.w > 10 ? index.w : 10;
+            const ExprBox box = box_from_ascent(index_w + radicand.w + 17, radicand.ascent + index.h + 3, radicand.descent);
+            add_node(layout, LayoutKind::NthRoot, i, root_end, small, box);
+            w += box.w;
+            if (box.ascent > ascent) {
+                ascent = box.ascent;
+            }
+            if (box.descent > descent) {
+                descent = box.descent;
+            }
+            i = root_end;
+            continue;
+        }
         const int frac_end = fraction_end_at(expr, i, end, num_start, num_end, den_start, den_end);
         if (frac_end > 0) {
             const ExprBox num = measure_expression_range_impl(expr, num_start, num_end, true, layout, CursorRegion::Numerator);
@@ -1055,6 +1566,34 @@ ExprBox measure_expression_range_impl(const char* expr, int start, int end, bool
                 descent = box.descent;
             }
             i = frac_end;
+            continue;
+        }
+        int standard_source_end = 0;
+        if (standard_trig_label_at(expr, i, end, standard_source_end) != nullptr) {
+            const ExprBox box = standard_trig_prefix_box(small);
+            add_node(layout, LayoutKind::TextRun, i, standard_source_end, small, box);
+            w += box.w;
+            if (box.ascent > ascent) {
+                ascent = box.ascent;
+            }
+            if (box.descent > descent) {
+                descent = box.descent;
+            }
+            i = standard_source_end;
+            continue;
+        }
+        int inverse_source_end = 0;
+        if (inverse_trig_label_at(expr, i, end, inverse_source_end) != nullptr) {
+            const ExprBox box = inverse_trig_prefix_box(small);
+            add_node(layout, LayoutKind::TextRun, i, inverse_source_end, small, box);
+            w += box.w;
+            if (box.ascent > ascent) {
+                ascent = box.ascent;
+            }
+            if (box.descent > descent) {
+                descent = box.descent;
+            }
+            i = inverse_source_end;
             continue;
         }
         if (i + 5 <= end && starts_with_at(expr, i, "sqrt(")) {
@@ -1135,6 +1674,35 @@ void draw_expression_range_impl(Display& display, int x, int baseline, const cha
         int num_end = 0;
         int den_start = 0;
         int den_end = 0;
+        int index_start = 0;
+        int index_end = 0;
+        int radicand_start = 0;
+        int radicand_end = 0;
+        const int root_end = nth_root_end_at(expr, i, end, index_start, index_end, radicand_start, radicand_end);
+        if (root_end > 0) {
+            const ExprBox index = measure_expression_range_impl(expr, index_start, index_end, true, nullptr, CursorRegion::RootIndex);
+            const ExprBox radicand = measure_expression_range_impl(expr, radicand_start, radicand_end, small, nullptr, CursorRegion::Radical);
+            const int index_w = index.w > 10 ? index.w : 10;
+            const int index_x = cx + 4 + (index_w - index.w) / 2;
+            const int index_baseline = baseline - radicand.ascent - 3;
+            const int radical_x = cx + index_w + 13;
+            const int radical_top = baseline - radicand.ascent - 4;
+            const int radical_box_h = radicand.h + 4;
+            if (index_start == index_end) {
+                dotted_rect(display, index_x - 1, index_baseline - index.ascent - 1, index_w + 2, index.h + 2, kGray);
+            }
+            if (radicand_start == radicand_end) {
+                dotted_rect(display, radical_x - 1, radical_top, radicand.w + 4, radical_box_h, kGray);
+            }
+            draw_expression_range_impl(display, index_x, index_baseline, expr, index_start, index_end, true, fg, bg);
+            draw_line(display, cx + index_w + 1, baseline - 3, cx + index_w + 5, baseline + 2, fg);
+            draw_line(display, cx + index_w + 5, baseline + 2, cx + index_w + 11, radical_top, fg);
+            draw_line(display, cx + index_w + 11, radical_top, radical_x + radicand.w + 3, radical_top, fg);
+            draw_expression_range_impl(display, radical_x, baseline, expr, radicand_start, radicand_end, small, fg, bg);
+            cx += index_w + radicand.w + 17;
+            i = root_end;
+            continue;
+        }
         const int frac_end = fraction_end_at(expr, i, end, num_start, num_end, den_start, den_end);
         if (frac_end > 0) {
             const ExprBox num = measure_expression_range_impl(expr, num_start, num_end, true, nullptr, CursorRegion::Numerator);
@@ -1149,6 +1717,29 @@ void draw_expression_range_impl(Display& display, int x, int baseline, const cha
             draw_expression_range_impl(display, den_x, bar_y + 4 + den.ascent, expr, den_start, den_end, true, fg, bg);
             cx += box_w + 2;
             i = frac_end;
+            continue;
+        }
+        int standard_source_end = 0;
+        const char* standard_label = standard_trig_label_at(expr, i, end, standard_source_end);
+        if (standard_label != nullptr) {
+            draw_text_scaled(display, cx, baseline - font_ascent(small), standard_label, small ? 1 : kTextScale, fg, bg);
+            cx += 3 * font_w(small);
+            draw_text_scaled(display, cx, baseline - font_ascent(small), "(", small ? 1 : kTextScale, fg, bg);
+            cx += font_w(small);
+            i = standard_source_end;
+            continue;
+        }
+        int inverse_source_end = 0;
+        const char* inverse_label = inverse_trig_label_at(expr, i, end, inverse_source_end);
+        if (inverse_label != nullptr) {
+            draw_text_scaled(display, cx, baseline - font_ascent(small), inverse_label, small ? 1 : kTextScale, fg, bg);
+            cx += 3 * font_w(small);
+            const int exp_baseline = baseline - superscript_raise(small);
+            draw_expression_range_impl(display, cx, exp_baseline, "-1", 0, 2, true, fg, bg);
+            cx += 2 * font_w(true);
+            draw_text_scaled(display, cx, baseline - font_ascent(small), "(", small ? 1 : kTextScale, fg, bg);
+            cx += font_w(small);
+            i = inverse_source_end;
             continue;
         }
         if (i + 5 <= end && starts_with_at(expr, i, "sqrt(")) {
@@ -1210,6 +1801,26 @@ void emit_anchors_range(LayoutContext& layout, int x, int baseline, const char* 
         int num_end = 0;
         int den_start = 0;
         int den_end = 0;
+        int index_start = 0;
+        int index_end = 0;
+        int radicand_start = 0;
+        int radicand_end = 0;
+        const int root_end = nth_root_end_at(expr, i, end, index_start, index_end, radicand_start, radicand_end);
+        if (root_end > 0) {
+            add_anchor(&layout, i, cx, baseline, font_h(small), region);
+            const ExprBox index = measure_expression_range_impl(expr, index_start, index_end, true, nullptr, CursorRegion::RootIndex);
+            const ExprBox radicand = measure_expression_range_impl(expr, radicand_start, radicand_end, small, nullptr, CursorRegion::Radical);
+            const int index_w = index.w > 10 ? index.w : 10;
+            const int index_x = cx + 4 + (index_w - index.w) / 2;
+            const int index_baseline = baseline - radicand.ascent - 3;
+            const int radical_x = cx + index_w + 13;
+            emit_anchors_range(layout, index_x, index_baseline, expr, index_start, index_end, true, CursorRegion::RootIndex);
+            emit_anchors_range(layout, radical_x, baseline, expr, radicand_start, radicand_end, small, CursorRegion::Radical);
+            cx += index_w + radicand.w + 17;
+            i = root_end;
+            add_anchor(&layout, i, cx, baseline, font_h(small), region);
+            continue;
+        }
         const int frac_end = fraction_end_at(expr, i, end, num_start, num_end, den_start, den_end);
         if (frac_end > 0) {
             add_anchor(&layout, i, cx, baseline, font_h(small), region);
@@ -1225,6 +1836,24 @@ void emit_anchors_range(LayoutContext& layout, int x, int baseline, const char* 
             cx += box_w + 2;
             add_anchor(&layout, frac_end, cx, baseline, font_h(small), region);
             i = frac_end;
+            continue;
+        }
+        int standard_source_end = 0;
+        if (standard_trig_label_at(expr, i, end, standard_source_end) != nullptr) {
+            add_anchor(&layout, i, cx, baseline, font_h(small), region);
+            const ExprBox box = standard_trig_prefix_box(small);
+            cx += box.w;
+            i = standard_source_end;
+            add_anchor(&layout, i, cx, baseline, font_h(small), region);
+            continue;
+        }
+        int inverse_source_end = 0;
+        if (inverse_trig_label_at(expr, i, end, inverse_source_end) != nullptr) {
+            add_anchor(&layout, i, cx, baseline, font_h(small), region);
+            const ExprBox box = inverse_trig_prefix_box(small);
+            cx += box.w;
+            i = inverse_source_end;
+            add_anchor(&layout, i, cx, baseline, font_h(small), region);
             continue;
         }
         if (i + 5 <= end && starts_with_at(expr, i, "sqrt(")) {
@@ -1280,12 +1909,15 @@ int anchor_index_for_cursor(const LayoutContext& layout, int cursor) {
     int best_dist = 100000;
     for (int i = 0; i < layout.anchor_count; ++i) {
         const int dist = layout.anchors[i].source > cursor ? layout.anchors[i].source - cursor : cursor - layout.anchors[i].source;
+        if (dist == 0 && best_dist == 0) {
+            if (layout.anchors[i].region == CursorRegion::Main) {
+                best = i;
+            }
+            continue;
+        }
         if (dist < best_dist) {
             best = i;
             best_dist = dist;
-        }
-        if (dist == 0) {
-            return i;
         }
     }
     return best;
@@ -1311,7 +1943,10 @@ bool move_cursor_horizontal(const char* buffer, int len, int& cursor, int direct
     if (index < 0) {
         return false;
     }
-    const int next = index + (direction < 0 ? -1 : 1);
+    int next = index + (direction < 0 ? -1 : 1);
+    while (next >= 0 && next < layout.anchor_count && layout.anchors[next].source == layout.anchors[index].source) {
+        next += direction < 0 ? -1 : 1;
+    }
     if (next < 0 || next >= layout.anchor_count) {
         return false;
     }
@@ -1377,9 +2012,65 @@ int input_height_for_expression(const char* expr) {
     return h;
 }
 
+int history_visible_last_from_first(int first, int available_h) {
+    if (g.history_count <= 0) {
+        return -1;
+    }
+    if (first < 0) {
+        first = 0;
+    }
+    if (first >= g.history_count) {
+        first = g.history_count - 1;
+    }
+    int last = first - 1;
+    int used_h = 0;
+    while (last + 1 < g.history_count) {
+        const int next = last + 1;
+        const int row_h = history_row_height(g.history[next]);
+        if (used_h + row_h > available_h && last >= first) {
+            break;
+        }
+        used_h += row_h;
+        last = next;
+    }
+    return last;
+}
+
+void clamp_history_view() {
+    if (g.history_count <= 0) {
+        g.history_first_entry = 0;
+        return;
+    }
+    if (g.history_first_entry < 0) {
+        g.history_first_entry = 0;
+    }
+    if (g.history_first_entry >= g.history_count) {
+        g.history_first_entry = g.history_count - 1;
+    }
+}
+
+void ensure_history_selection_visible() {
+    if (g.history_selection < 0) {
+        g.history_first_entry = 0;
+        return;
+    }
+    clamp_history_view();
+    const int input_h = input_height_for_expression(g.home_expr);
+    const int available_h = kLcdHeight - input_h - 2;
+    const int selected_entry = g.history_selection / 2;
+    if (selected_entry < g.history_first_entry) {
+        g.history_first_entry = selected_entry;
+        return;
+    }
+    int last = history_visible_last_from_first(g.history_first_entry, available_h);
+    while (selected_entry > last && g.history_first_entry + 1 <= selected_entry) {
+        ++g.history_first_entry;
+        last = history_visible_last_from_first(g.history_first_entry, available_h);
+    }
+}
+
 void draw_input_line(Display& display, const char* prompt, const char* expr, int cursor, int& scroll_x, int input_y, int input_h) {
-    const int prompt_w = 24;
-    const int expr_x = prompt_w;
+    const int expr_x = 8;
     const int visible_w = kLcdWidth - expr_x - 2;
     const int len = static_cast<int>(std::strlen(expr));
     ensure_cursor_visible(expr, len, cursor, visible_w, scroll_x);
@@ -1390,8 +2081,8 @@ void draw_input_line(Display& display, const char* prompt, const char* expr, int
     }
     fill_rect(display, 0, input_y, kLcdWidth, input_h, kWhite);
     draw_expression(display, expr_x - scroll_x, expr_y, expr, cursor, kBlack, kWhite);
-    fill_rect(display, 0, input_y, expr_x, input_h, kWhite);
-    draw_text_scaled(display, 4, input_y + 6, prompt, kTextScale, kBlack, kWhite);
+    fill_rect(display, 0, input_y, 3, input_h, kWhite);
+    (void)prompt;
 }
 
 int history_row_height(const HistoryEntry& entry) {
@@ -1404,33 +2095,9 @@ void render_home(Display& display) {
     clear(display, kWhite);
     const int input_h = input_height_for_expression(g.home_expr);
     const int input_y = kLcdHeight - input_h;
-    const int selected_entry = g.history_selection >= 0 ? g.history_selection / 2 : 0;
-    int first = selected_entry;
-    int last = selected_entry - 1;
-    int used_h = 0;
-    while (last + 1 < g.history_count) {
-        const int next = last + 1;
-        const int row_h = history_row_height(g.history[next]);
-        if (used_h + row_h > input_y - 2 && last >= first) {
-            break;
-        }
-        used_h += row_h;
-        last = next;
-        if (g.history_selection < 0 && last + 1 >= g.history_count) {
-            break;
-        }
-    }
-    if (g.history_selection < 0) {
-        while (first > 0) {
-            const int next = first - 1;
-            const int row_h = history_row_height(g.history[next]);
-            if (used_h + row_h > input_y - 2) {
-                break;
-            }
-            used_h += row_h;
-            first = next;
-        }
-    }
+    ensure_history_selection_visible();
+    int first = g.history_first_entry;
+    int last = history_visible_last_from_first(first, input_y - 2);
     if (g.history_count == 0) {
         first = 0;
         last = -1;
@@ -1510,7 +2177,7 @@ void render_graph(Display& display) {
         EvalResult result = evaluate_expression_with_x_readonly(g.y_expr, g.eval, x);
         int sx = 0;
         int sy = 0;
-        if (result.ok && graph_to_screen(g.window, x, result.value, sx, sy)) {
+        if (result.ok && near_zero(result.imag) && graph_to_screen(g.window, x, result.value, sx, sy)) {
             if (have_prev) {
                 draw_line(display, prev_x, prev_y, sx, sy, kRed);
             }
@@ -1560,14 +2227,28 @@ void render_window(Display& display) {
 void render_settings(Display& display) {
     clear(display, kWhite);
     title(display, "SETTINGS");
-    draw_text_scaled(display, 8, 24, "ANGLE: RADIANS", kTextScale, kBlack, kWhite);
+    const int row_y[2] = {24, 42};
+
+    draw_text_scaled(display, 8, row_y[0], "ANGLE:", kTextScale, kBlack, kWhite);
+    const bool radians = !g.eval.degree_mode;
+    const Color radians_bg = g.settings_selection == 0 && radians ? kBlue : (radians ? kLightGray : kWhite);
+    const Color degrees_bg = g.settings_selection == 0 && !radians ? kBlue : (!radians ? kLightGray : kWhite);
+    draw_text_scaled(display, 78, row_y[0], "RADIANS", kTextScale, radians_bg == kBlue ? kWhite : kBlack, radians_bg);
+    draw_text_scaled(display, 166, row_y[0], "DEGREES", kTextScale, degrees_bg == kBlue ? kWhite : kBlack, degrees_bg);
+
+    draw_text_scaled(display, 8, row_y[1], "OUTPUT:", kTextScale, kBlack, kWhite);
+    const bool decimal = !g.fraction_output;
+    const Color decimal_bg = g.settings_selection == 1 && decimal ? kBlue : (decimal ? kLightGray : kWhite);
+    const Color fraction_bg = g.settings_selection == 1 && !decimal ? kBlue : (!decimal ? kLightGray : kWhite);
+    draw_text_scaled(display, 86, row_y[1], "DECIMAL", kTextScale, decimal_bg == kBlue ? kWhite : kBlack, decimal_bg);
+    draw_text_scaled(display, 174, row_y[1], "FRACTION", kTextScale, fraction_bg == kBlue ? kWhite : kBlack, fraction_bg);
 #if defined(CALC_USE_FLOAT) && CALC_USE_FLOAT
-    draw_text_scaled(display, 8, 40, "REAL: FLOAT", kTextScale, kBlack, kWhite);
+    draw_text_scaled(display, 8, 104, "REAL: FLOAT", kTextScale, kBlack, kWhite);
 #else
-    draw_text_scaled(display, 8, 40, "REAL: DOUBLE", kTextScale, kBlack, kWhite);
+    draw_text_scaled(display, 8, 104, "REAL: DOUBLE", kTextScale, kBlack, kWhite);
 #endif
-    draw_text_scaled(display, 8, 56, "DISPLAY: RGB565 320X240", kTextScale, kBlack, kWhite);
-    draw_text_scaled(display, 8, 80, "FIXED BUFFERS ENABLED", kTextScale, kGreen, kWhite);
+    draw_text_scaled(display, 8, 120, "DISPLAY: RGB565 320X240", kTextScale, kBlack, kWhite);
+    draw_text_scaled(display, 8, 144, "FIXED BUFFERS ENABLED", kTextScale, kGreen, kWhite);
 }
 
 void render_about(Display& display) {
@@ -1593,6 +2274,8 @@ void calc_init(Platform& platform) {
     g.cursor_on = true;
     g.history_selection = -1;
     g.edit_cursor_before_history = 0;
+    g.settings_selection = 0;
+    g.fraction_output = false;
     g.last_tick_ms = millis();
 }
 
@@ -1616,7 +2299,7 @@ void calc_key_down(Key key) {
         case Screen::YEquals: handle_y_key(key); break;
         case Screen::Graph: handle_graph_key(key); break;
         case Screen::Window: handle_window_key(key); break;
-        case Screen::Settings:
+        case Screen::Settings: handle_settings_key(key); break;
         case Screen::About:
             if (key == Key::Enter || key == Key::Clear) {
                 g.screen = Screen::Home;
@@ -1706,6 +2389,22 @@ const char* calc_debug_home_expression() {
 
 int calc_debug_home_scroll_x() {
     return g.home_expr_scroll_x;
+}
+
+int calc_debug_history_selection() {
+    return g.history_selection;
+}
+
+int calc_debug_history_first_entry() {
+    return g.history_first_entry;
+}
+
+bool calc_debug_angle_degrees() {
+    return g.eval.degree_mode;
+}
+
+bool calc_debug_fraction_output() {
+    return g.fraction_output;
 }
 
 }  // namespace calc

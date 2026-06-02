@@ -40,6 +40,7 @@ enum class Function : std::uint8_t {
 struct Token {
     TokenKind kind;
     CalcReal number;
+    CalcReal imag;
     char op;
     char variable;
     Function function;
@@ -115,6 +116,31 @@ bool pop_operator_to_output(ParseState& state) {
         return false;
     }
     return push_output(state, state.operators[--state.operator_count]);
+}
+
+bool push_binary_operator(ParseState& state, char op, int pos) {
+    Token token{};
+    token.kind = TokenKind::Operator;
+    token.op = op;
+    token.pos = pos;
+
+    while (state.operator_count > 0) {
+        const Token top = state.operators[state.operator_count - 1];
+        if (top.kind != TokenKind::Operator && top.kind != TokenKind::Function) {
+            break;
+        }
+        if (top.kind == TokenKind::Function ||
+            precedence(top.op) > precedence(op) ||
+            (precedence(top.op) == precedence(op) && !is_right_assoc(op))) {
+            if (!pop_operator_to_output(state)) {
+                return false;
+            }
+        } else {
+            break;
+        }
+    }
+
+    return push_operator(state, token);
 }
 
 bool parse_function(const char* name, int len, Function& function) {
@@ -222,22 +248,201 @@ bool parse_number(const char* text, int& pos, CalcReal& value) {
     return std::isfinite(value);
 }
 
+bool append_char(char* out, int& pos, int cap, char ch) {
+    if (pos + 1 >= cap) {
+        return false;
+    }
+    out[pos++] = ch;
+    out[pos] = '\0';
+    return true;
+}
+
+bool append_text(char* out, int& pos, int cap, const char* text) {
+    for (int i = 0; text[i] != '\0'; ++i) {
+        if (!append_char(out, pos, cap, text[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int matching_paren_local(const char* expr, int open, int end) {
+    int depth = 0;
+    for (int i = open; i < end; ++i) {
+        if (expr[i] == '(') {
+            ++depth;
+        } else if (expr[i] == ')') {
+            --depth;
+            if (depth == 0) {
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
+bool expand_roots_range(const char* expr, int start, int end, char* out, int& pos, int cap) {
+    for (int i = start; i < end;) {
+        if (i + 6 <= end && std::strncmp(expr + i, "root(", 5) == 0) {
+            const int index_open = i + 4;
+            const int index_close = matching_paren_local(expr, index_open, end);
+            if (index_close > 0 && index_close + 1 < end && expr[index_close + 1] == '(') {
+                const int rad_open = index_close + 1;
+                const int rad_close = matching_paren_local(expr, rad_open, end);
+                if (rad_close > 0) {
+                    if (!append_text(out, pos, cap, "((") ||
+                        !expand_roots_range(expr, rad_open + 1, rad_close, out, pos, cap) ||
+                        !append_text(out, pos, cap, ")^(1/(") ||
+                        !expand_roots_range(expr, index_open + 1, index_close, out, pos, cap) ||
+                        !append_text(out, pos, cap, ")))")) {
+                        return false;
+                    }
+                    i = rad_close + 1;
+                    continue;
+                }
+            }
+        }
+        if (!append_char(out, pos, cap, expr[i])) {
+            return false;
+        }
+        ++i;
+    }
+    return true;
+}
+
+bool expand_roots(const char* expression, char* out, int cap) {
+    out[0] = '\0';
+    const int len = static_cast<int>(std::strlen(expression));
+    int pos = 0;
+    return expand_roots_range(expression, 0, len, out, pos, cap);
+}
+
+struct ComplexValue {
+    CalcReal real;
+    CalcReal imag;
+};
+
 EvalResult fail(EvalError error, int pos) {
     EvalResult result{};
     result.ok = false;
     result.value = real(0.0);
+    result.imag = real(0.0);
     result.error = error;
     result.error_pos = pos;
     return result;
 }
 
-EvalResult ok(CalcReal value) {
+EvalResult ok(ComplexValue value) {
     EvalResult result{};
     result.ok = true;
-    result.value = value;
+    result.value = value.real;
+    result.imag = value.imag;
     result.error = EvalError::None;
     result.error_pos = -1;
     return result;
+}
+
+ComplexValue make_complex(CalcReal real_part, CalcReal imag_part) {
+    return {real_part, imag_part};
+}
+
+bool finite_complex(ComplexValue value) {
+    return std::isfinite(value.real) && std::isfinite(value.imag);
+}
+
+bool zero_complex(ComplexValue value) {
+    return value.real == real(0.0) && value.imag == real(0.0);
+}
+
+CalcReal clean_zero(CalcReal value) {
+    return value == real(0.0) ? real(0.0) : value;
+}
+
+ComplexValue add_complex(ComplexValue lhs, ComplexValue rhs) {
+    return {lhs.real + rhs.real, lhs.imag + rhs.imag};
+}
+
+ComplexValue sub_complex(ComplexValue lhs, ComplexValue rhs) {
+    return {lhs.real - rhs.real, lhs.imag - rhs.imag};
+}
+
+ComplexValue mul_complex(ComplexValue lhs, ComplexValue rhs) {
+    return {lhs.real * rhs.real - lhs.imag * rhs.imag, lhs.real * rhs.imag + lhs.imag * rhs.real};
+}
+
+ComplexValue scale_complex(ComplexValue value, CalcReal scale) {
+    return {value.real * scale, value.imag * scale};
+}
+
+ComplexValue div_complex(ComplexValue lhs, ComplexValue rhs) {
+    const CalcReal denom = rhs.real * rhs.real + rhs.imag * rhs.imag;
+    return {(lhs.real * rhs.real + lhs.imag * rhs.imag) / denom,
+            (lhs.imag * rhs.real - lhs.real * rhs.imag) / denom};
+}
+
+ComplexValue neg_complex(ComplexValue value) {
+    return {clean_zero(-value.real), clean_zero(-value.imag)};
+}
+
+ComplexValue sqrt_complex(ComplexValue value) {
+    if (value.imag == real(0.0) && value.real >= real(0.0)) {
+        return {std::sqrt(value.real), real(0.0)};
+    }
+    const CalcReal magnitude = std::sqrt(value.real * value.real + value.imag * value.imag);
+    CalcReal real_part = std::sqrt((magnitude + value.real) / real(2.0));
+    CalcReal imag_part = std::sqrt((magnitude - value.real) / real(2.0));
+    if (value.imag < real(0.0)) {
+        imag_part = -imag_part;
+    }
+    return {real_part, imag_part};
+}
+
+ComplexValue exp_complex(ComplexValue value) {
+    const CalcReal scale = std::exp(value.real);
+    return {scale * std::cos(value.imag), scale * std::sin(value.imag)};
+}
+
+ComplexValue log_complex(ComplexValue value) {
+    return {std::log(std::sqrt(value.real * value.real + value.imag * value.imag)),
+            std::atan2(clean_zero(value.imag), clean_zero(value.real))};
+}
+
+ComplexValue pow_complex(ComplexValue lhs, ComplexValue rhs) {
+    if (zero_complex(lhs)) {
+        return zero_complex(rhs) ? make_complex(real(1.0), real(0.0)) : make_complex(real(0.0), real(0.0));
+    }
+    return exp_complex(mul_complex(rhs, log_complex(lhs)));
+}
+
+ComplexValue sin_complex(ComplexValue value) {
+    return {std::sin(value.real) * std::cosh(value.imag), std::cos(value.real) * std::sinh(value.imag)};
+}
+
+ComplexValue cos_complex(ComplexValue value) {
+    return {std::cos(value.real) * std::cosh(value.imag), -std::sin(value.real) * std::sinh(value.imag)};
+}
+
+ComplexValue tan_complex(ComplexValue value) {
+    return div_complex(sin_complex(value), cos_complex(value));
+}
+
+ComplexValue asin_complex(ComplexValue value) {
+    const ComplexValue iz = {-value.imag, value.real};
+    const ComplexValue root = sqrt_complex(sub_complex(make_complex(real(1.0), real(0.0)), mul_complex(value, value)));
+    const ComplexValue logged = log_complex(add_complex(iz, root));
+    return {logged.imag, -logged.real};
+}
+
+ComplexValue acos_complex(ComplexValue value) {
+    const ComplexValue asin_value = asin_complex(value);
+    return {kPi / real(2.0) - asin_value.real, -asin_value.imag};
+}
+
+ComplexValue atan_complex(ComplexValue value) {
+    const ComplexValue iz = {-value.imag, value.real};
+    const ComplexValue one = make_complex(real(1.0), real(0.0));
+    const ComplexValue logged = log_complex(div_complex(sub_complex(one, iz), add_complex(one, iz)));
+    return {logged.imag / real(2.0), -logged.real / real(2.0)};
 }
 
 bool is_near_integer(CalcReal value, int& integer) {
@@ -293,6 +498,9 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
         saw_any = true;
 
         if (std::isdigit(ch) || expression[i] == '.') {
+            if (!expect_operand && !push_binary_operator(state, '*', i)) {
+                return false;
+            }
             CalcReal value = 0.0;
             const int start = i;
             if (!parse_number(expression, i, value)) {
@@ -302,6 +510,7 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
             Token token{};
             token.kind = TokenKind::Number;
             token.number = value;
+            token.imag = real(0.0);
             token.pos = start;
             if (!push_output(state, token)) {
                 return false;
@@ -311,6 +520,9 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
         }
 
         if (std::isalpha(ch)) {
+            if (!expect_operand && !push_binary_operator(state, '*', i)) {
+                return false;
+            }
             const int start = i;
             while (std::isalpha(static_cast<unsigned char>(expression[i]))) {
                 ++i;
@@ -322,6 +534,7 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
                 Token token{};
                 token.kind = TokenKind::Number;
                 token.number = kPi;
+                token.imag = real(0.0);
                 token.pos = start;
                 if (!push_output(state, token)) {
                     return false;
@@ -333,6 +546,19 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
                 Token token{};
                 token.kind = TokenKind::Number;
                 token.number = kE;
+                token.imag = real(0.0);
+                token.pos = start;
+                if (!push_output(state, token)) {
+                    return false;
+                }
+                expect_operand = false;
+                continue;
+            }
+            if (len == 1 && expression[start] == 'i') {
+                Token token{};
+                token.kind = TokenKind::Number;
+                token.number = real(0.0);
+                token.imag = real(1.0);
                 token.pos = start;
                 if (!push_output(state, token)) {
                     return false;
@@ -379,6 +605,9 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
         }
 
         if (expression[i] == '(') {
+            if (!expect_operand && !push_binary_operator(state, '*', i)) {
+                return false;
+            }
             Token token{};
             token.kind = TokenKind::LParen;
             token.pos = i;
@@ -433,28 +662,7 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
                 }
             }
 
-            Token token{};
-            token.kind = TokenKind::Operator;
-            token.op = op;
-            token.pos = i;
-
-            while (state.operator_count > 0) {
-                const Token top = state.operators[state.operator_count - 1];
-                if (top.kind != TokenKind::Operator && top.kind != TokenKind::Function) {
-                    break;
-                }
-                if (top.kind == TokenKind::Function ||
-                    precedence(top.op) > precedence(op) ||
-                    (precedence(top.op) == precedence(op) && !is_right_assoc(op))) {
-                    if (!pop_operator_to_output(state)) {
-                        return false;
-                    }
-                } else {
-                    break;
-                }
-            }
-
-            if (!push_operator(state, token)) {
+            if (!push_binary_operator(state, op, i)) {
                 return false;
             }
             ++i;
@@ -489,7 +697,7 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
 }
 
 EvalResult evaluate_rpn(const ParseState& state, EvalContext& context, bool override_x, CalcReal x_value) {
-    CalcReal stack[kMaxStack]{};
+    ComplexValue stack[kMaxStack]{};
     int stack_count = 0;
 
     for (int i = 0; i < state.output_count; ++i) {
@@ -498,23 +706,23 @@ EvalResult evaluate_rpn(const ParseState& state, EvalContext& context, bool over
             if (stack_count >= kMaxStack) {
                 return fail(EvalError::StackOverflow, token.pos);
             }
-            stack[stack_count++] = token.number;
+            stack[stack_count++] = make_complex(token.number, token.imag);
             continue;
         }
 
         if (token.kind == TokenKind::Variable) {
-            CalcReal value = 0.0;
+            ComplexValue value{};
             if (token.variable == '@') {
-                value = context.ans;
+                value = make_complex(context.ans, context.ans_imag);
             } else {
                 const int idx = token.variable - 'A';
                 if (idx < 0 || idx >= 26) {
                     return fail(EvalError::UnknownIdentifier, token.pos);
                 }
                 if (override_x && token.variable == 'X') {
-                    value = x_value;
+                    value = make_complex(x_value, real(0.0));
                 } else if (context.variable_valid[idx]) {
-                    value = context.variables[idx];
+                    value = make_complex(context.variables[idx], context.variable_imag[idx]);
                 } else {
                     return fail(EvalError::UnknownIdentifier, token.pos);
                 }
@@ -531,30 +739,41 @@ EvalResult evaluate_rpn(const ParseState& state, EvalContext& context, bool over
                 if (stack_count < 1) {
                     return fail(EvalError::UnexpectedToken, token.pos);
                 }
-                stack[stack_count - 1] = -stack[stack_count - 1];
+                stack[stack_count - 1] = neg_complex(stack[stack_count - 1]);
             } else {
                 if (stack_count < 2) {
                     return fail(EvalError::UnexpectedToken, token.pos);
                 }
-                const CalcReal rhs = stack[--stack_count];
-                const CalcReal lhs = stack[--stack_count];
-                CalcReal value = 0.0;
+                const ComplexValue rhs = stack[--stack_count];
+                const ComplexValue lhs = stack[--stack_count];
+                ComplexValue value{};
                 switch (token.op) {
-                    case '+': value = lhs + rhs; break;
-                    case '-': value = lhs - rhs; break;
-                    case '*': value = lhs * rhs; break;
+                    case '+': value = add_complex(lhs, rhs); break;
+                    case '-': value = sub_complex(lhs, rhs); break;
+                    case '*': value = mul_complex(lhs, rhs); break;
                     case '/':
-                        if (rhs == 0.0) {
+                        if (zero_complex(rhs)) {
                             return fail(EvalError::DivideByZero, token.pos);
                         }
-                        value = lhs / rhs;
+                        value = div_complex(lhs, rhs);
                         break;
-                    case '^': value = pow_fast(lhs, rhs); break;
+                    case '^':
+                        if (lhs.imag == real(0.0) && rhs.imag == real(0.0)) {
+                            int integer = 0;
+                            if (lhs.real >= real(0.0) || is_near_integer(rhs.real, integer)) {
+                                value = make_complex(pow_fast(lhs.real, rhs.real), real(0.0));
+                            } else {
+                                value = pow_complex(lhs, rhs);
+                            }
+                        } else {
+                            value = pow_complex(lhs, rhs);
+                        }
+                        break;
                     default: return fail(EvalError::InvalidToken, token.pos);
                 }
                 stack[stack_count++] = value;
             }
-            if (!std::isfinite(stack[stack_count - 1])) {
+            if (!finite_complex(stack[stack_count - 1])) {
                 return fail(EvalError::Overflow, token.pos);
             }
             continue;
@@ -564,20 +783,28 @@ EvalResult evaluate_rpn(const ParseState& state, EvalContext& context, bool over
             if (stack_count < 1) {
                 return fail(EvalError::UnexpectedToken, token.pos);
             }
-            const CalcReal arg = stack[stack_count - 1];
-            CalcReal value = 0.0;
-            switch (token.function) {
-                case Function::Sin: value = std::sin(arg); break;
-                case Function::Cos: value = std::cos(arg); break;
-                case Function::Tan: value = std::tan(arg); break;
-                case Function::ASin: value = std::asin(arg); break;
-                case Function::ACos: value = std::acos(arg); break;
-                case Function::ATan: value = std::atan(arg); break;
-                case Function::Sqrt: value = std::sqrt(arg); break;
-                case Function::Log: value = std::log10(arg); break;
-                case Function::Ln: value = std::log(arg); break;
+            ComplexValue arg = stack[stack_count - 1];
+            if (context.degree_mode &&
+                (token.function == Function::Sin || token.function == Function::Cos || token.function == Function::Tan)) {
+                arg = scale_complex(arg, kPi / real(180.0));
             }
-            if (!std::isfinite(value)) {
+            ComplexValue value{};
+            switch (token.function) {
+                case Function::Sin: value = sin_complex(arg); break;
+                case Function::Cos: value = cos_complex(arg); break;
+                case Function::Tan: value = tan_complex(arg); break;
+                case Function::ASin: value = asin_complex(arg); break;
+                case Function::ACos: value = acos_complex(arg); break;
+                case Function::ATan: value = atan_complex(arg); break;
+                case Function::Sqrt: value = sqrt_complex(arg); break;
+                case Function::Log: value = div_complex(log_complex(arg), make_complex(std::log(real(10.0)), real(0.0))); break;
+                case Function::Ln: value = log_complex(arg); break;
+            }
+            if (context.degree_mode &&
+                (token.function == Function::ASin || token.function == Function::ACos || token.function == Function::ATan)) {
+                value = scale_complex(value, real(180.0) / kPi);
+            }
+            if (!finite_complex(value)) {
                 return fail(EvalError::Domain, token.pos);
             }
             stack[stack_count - 1] = value;
@@ -642,9 +869,11 @@ EvalResult evaluate_impl(const char* expression, EvalContext& context, bool over
         }
         const int idx = variable - 'A';
         context.variables[idx] = assigned.value;
+        context.variable_imag[idx] = assigned.imag;
         context.variable_valid[idx] = true;
         if (update_ans) {
             context.ans = assigned.value;
+            context.ans_imag = assigned.imag;
         }
         return assigned;
     }
@@ -662,9 +891,11 @@ EvalResult evaluate_impl(const char* expression, EvalContext& context, bool over
             }
             const int idx = variable - 'A';
             context.variables[idx] = assigned.value;
+            context.variable_imag[idx] = assigned.imag;
             context.variable_valid[idx] = true;
             if (update_ans) {
                 context.ans = assigned.value;
+                context.ans_imag = assigned.imag;
             }
             return assigned;
         }
@@ -673,13 +904,18 @@ EvalResult evaluate_impl(const char* expression, EvalContext& context, bool over
     ParseState state{};
     state.error = EvalError::None;
     state.error_pos = -1;
-    if (!parse_to_rpn(expression, state)) {
+    char expanded[kExpressionCapacity]{};
+    if (!expand_roots(expression, expanded, kExpressionCapacity)) {
+        return fail(EvalError::TooManyTokens, 0);
+    }
+    if (!parse_to_rpn(expanded, state)) {
         return fail(state.error, state.error_pos);
     }
 
     EvalResult result = evaluate_rpn(state, context, override_x, x_value);
     if (result.ok && update_ans) {
         context.ans = result.value;
+        context.ans_imag = result.imag;
     }
     return result;
 }
@@ -689,10 +925,14 @@ EvalResult evaluate_impl(const char* expression, EvalContext& context, bool over
 void eval_context_init(EvalContext& context) {
     for (int i = 0; i < 26; ++i) {
         context.variables[i] = 0.0;
+        context.variable_imag[i] = 0.0;
         context.variable_valid[i] = false;
     }
     context.ans = 0.0;
+    context.ans_imag = 0.0;
+    context.degree_mode = false;
     context.variables['X' - 'A'] = 0.0;
+    context.variable_imag['X' - 'A'] = 0.0;
     context.variable_valid['X' - 'A'] = true;
 }
 

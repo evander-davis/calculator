@@ -4,6 +4,10 @@ This project is building a TI-84 Plus CE-style scientific and graphing
 calculator for the RP2350, with a desktop emulator used to develop and verify
 portable behavior before hardware-specific drivers exist.
 
+Make the minimal changes necessary to achieve the assigned task. Do not make
+changes to unrelated code sections or attempt to add features outside of the
+requested scope.
+
 ## Core Goals
 
 - Keep the calculator core portable. Code under `src/core` and `include/calc`

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 
 namespace {
 
@@ -50,6 +51,13 @@ int main() {
     result = calc::evaluate_expression("sin(pi/2)", context);
     check(result.ok && nearly(result.value, 1.0), "sin pi over 2");
 
+    context.degree_mode = true;
+    result = calc::evaluate_expression("sin(90)", context);
+    check(result.ok && nearly(result.value, 1.0), "degree mode sin converts to radians");
+    result = calc::evaluate_expression("asin(1)", context);
+    check(result.ok && nearly(result.value, 90.0), "degree mode inverse trig converts from radians");
+    context.degree_mode = false;
+
     result = calc::evaluate_expression("1.25e2", context);
     check(result.ok && nearly(result.value, 125.0), "decimal exponent parsing");
 
@@ -72,7 +80,25 @@ int main() {
     check(!result.ok && result.error == calc::EvalError::DivideByZero, "divide by zero");
 
     result = calc::evaluate_expression("sqrt(-1)", context);
-    check(!result.ok && result.error == calc::EvalError::Domain, "domain error");
+    check(result.ok && nearly(result.value, 0.0) && nearly(result.imag, 1.0), "sqrt negative returns imaginary");
+
+    result = calc::evaluate_expression("i^2", context);
+    check(result.ok && nearly(result.value, -1.0) && nearly(result.imag, 0.0), "imaginary unit squares to negative one");
+
+    result = calc::evaluate_expression("(-1)^0.5", context);
+    check(result.ok && nearly(result.value, 0.0) && nearly(result.imag, 1.0), "negative fractional power returns imaginary");
+
+    result = calc::evaluate_expression("(1+2i)*(3-i)", context);
+    check(result.ok && nearly(result.value, 5.0) && nearly(result.imag, 5.0), "complex multiply");
+
+    result = calc::evaluate_expression("A=2+i", context);
+    check(result.ok && nearly(context.variables['A' - 'A'], 2.0) && nearly(context.variable_imag['A' - 'A'], 1.0),
+          "complex assignment");
+    result = calc::evaluate_expression("A*i", context);
+    check(result.ok && nearly(result.value, -1.0) && nearly(result.imag, 2.0), "complex variable reuse");
+
+    result = calc::evaluate_expression("root(3)(8)", context);
+    check(result.ok && nearly(result.value, 2.0) && nearly(result.imag, 0.0), "nth root evaluation");
 
     result = calc::evaluate_expression_with_x("X^2", context, 3.0);
     check(result.ok && nearly(result.value, 9.0), "x override");
@@ -109,6 +135,142 @@ int main() {
     calc::calc_init(platform);
     check(calc::calc_screen() == calc::Screen::Home, "initial screen");
 
+    press(calc::Key::Second);
+    press(calc::Key::Fraction);
+    check(calc::calc_screen() == calc::Screen::Settings, "second fraction opens settings");
+    press(calc::Key::Right);
+    check(calc::calc_debug_angle_degrees(), "settings right selects degrees");
+    press(calc::Key::Left);
+    check(!calc::calc_debug_angle_degrees(), "settings left selects radians");
+    press(calc::Key::Right);
+    press(calc::Key::Down);
+    press(calc::Key::Right);
+    check(calc::calc_debug_fraction_output(), "settings right selects fraction output");
+    press(calc::Key::Left);
+    check(!calc::calc_debug_fraction_output(), "settings left selects decimal output");
+    press(calc::Key::Right);
+    press(calc::Key::Clear);
+    check(calc::calc_screen() == calc::Screen::Home, "clear exits settings");
+
+    calc::calc_debug_set_home_expression("sin(90)", 7);
+    press(calc::Key::Enter);
+    check(std::strcmp(calc::calc_debug_home_expression(), "") == 0,
+          "degree mode expression evaluates from home");
+
+    calc::calc_debug_set_home_expression("1.5+0.5i", 8);
+    press(calc::Key::Enter);
+    press(calc::Key::Up);
+    press(calc::Key::Enter);
+    check(std::strcmp(calc::calc_debug_home_expression(), "(3)/(2)+(1)/(2)i") == 0,
+          "fraction output formats real and imaginary coefficients separately");
+
+    calc::calc_init(platform);
+    press(calc::Key::Alpha);
+    press(calc::Key::Square);
+    check(std::strcmp(calc::calc_debug_home_expression(), "I") == 0,
+          "alpha x squared inserts I");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::Alpha);
+    press(calc::Key::Dot);
+    check(std::strcmp(calc::calc_debug_home_expression(), "i") == 0,
+          "alpha dot inserts imaginary i");
+
+    calc::calc_debug_set_home_expression("12", 2);
+    press(calc::Key::Delete);
+    check(std::strcmp(calc::calc_debug_home_expression(), "1") == 0 && calc::calc_debug_home_cursor() == 1,
+          "delete key behaves as backspace");
+
+    calc::calc_debug_set_home_expression("()/(2)", 1);
+    press(calc::Key::Delete);
+    check(std::strcmp(calc::calc_debug_home_expression(), "") == 0,
+          "delete key preserves blank fraction shortcut");
+
+    calc::calc_debug_set_home_expression("asin(2)", 5);
+    press(calc::Key::Left);
+    check(calc::calc_debug_home_cursor() == 0,
+          "left treats inverse trig prefix as one cursor step");
+    press(calc::Key::Right);
+    check(calc::calc_debug_home_cursor() == 5,
+          "right treats inverse trig prefix as one cursor step");
+
+    calc::calc_debug_set_home_expression("sin(2)", 4);
+    press(calc::Key::Left);
+    check(calc::calc_debug_home_cursor() == 0,
+          "left treats trig prefix as one cursor step");
+    press(calc::Key::Right);
+    check(calc::calc_debug_home_cursor() == 4,
+          "right treats trig prefix as one cursor step");
+
+    calc::calc_debug_set_home_expression("2^3", 3);
+    press(calc::Key::Delete);
+    check(std::strcmp(calc::calc_debug_home_expression(), "2") == 0 && calc::calc_debug_home_cursor() == 1,
+          "delete to right of exponent removes whole exponent");
+
+    calc::calc_debug_set_home_expression("2^()", 3);
+    press(calc::Key::Delete);
+    check(std::strcmp(calc::calc_debug_home_expression(), "2") == 0 && calc::calc_debug_home_cursor() == 1,
+          "delete inside blank exponent removes whole exponent");
+
+    calc::calc_debug_set_home_expression("(1)/(2)", 7);
+    press(calc::Key::Delete);
+    check(std::strcmp(calc::calc_debug_home_expression(), "") == 0 && calc::calc_debug_home_cursor() == 0,
+          "delete to right of fraction removes whole fraction");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::Digit2);
+    press(calc::Key::Square);
+    check(std::strcmp(calc::calc_debug_home_expression(), "2^(2)") == 0 && calc::calc_debug_home_cursor() == 5,
+          "square key leaves cursor after exponent");
+    press(calc::Key::Left);
+    check(calc::calc_debug_home_cursor() == 4,
+          "left after square key lands on exponent right edge");
+    press(calc::Key::Right);
+    check(calc::calc_debug_home_cursor() == 5,
+          "right exits square key exponent");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::Second);
+    press(calc::Key::Power);
+    check(std::strcmp(calc::calc_debug_home_expression(), "root()()") == 0 && calc::calc_debug_home_cursor() == 5,
+          "second power inserts nth root with cursor in index");
+    press(calc::Key::Digit3);
+    press(calc::Key::Down);
+    press(calc::Key::Digit8);
+    check(std::strcmp(calc::calc_debug_home_expression(), "root(3)(8)") == 0 && calc::calc_debug_home_cursor() == 9,
+          "nth root supports index and radicand cursor slots");
+
+    calc::calc_debug_set_home_expression("0.5", 3);
+    press(calc::Key::FracDecimal);
+    check(std::strcmp(calc::calc_debug_home_expression(), "(1)/(2)") == 0,
+          "frac decimal key converts decimal to fraction approximation");
+    press(calc::Key::FracDecimal);
+    check(std::strcmp(calc::calc_debug_home_expression(), "0.5") == 0,
+          "frac decimal key converts fraction to decimal");
+
+    calc::calc_debug_set_home_expression("sin(pi/4)", 9);
+    press(calc::Key::FracDecimal);
+    check(std::strcmp(calc::calc_debug_home_expression(), "(sqrt(2))/(2)") == 0,
+          "frac decimal key converts common trig radical");
+
+    calc::calc_init(platform);
+    for (int i = 1; i <= 4; ++i) {
+        char expr[8]{};
+        std::snprintf(expr, sizeof(expr), "%d+1", i);
+        calc::calc_debug_set_home_expression(expr, static_cast<int>(std::strlen(expr)));
+        press(calc::Key::Enter);
+    }
+    press(calc::Key::Up);
+    check(calc::calc_debug_history_selection() == 0 && calc::calc_debug_history_first_entry() == 0,
+          "first history up selects latest answer without scrolling");
+    press(calc::Key::Up);
+    check(calc::calc_debug_history_selection() == 1 && calc::calc_debug_history_first_entry() == 0,
+          "second history up moves highlight within visible latest entry");
+    press(calc::Key::Up);
+    check(calc::calc_debug_history_selection() == 2 && calc::calc_debug_history_first_entry() == 0,
+          "third history up moves highlight to visible older answer before scrolling");
+
+    calc::calc_debug_set_home_expression("", 0);
     press(calc::Key::Digit2);
     press(calc::Key::Add);
     press(calc::Key::Digit2);
