@@ -352,13 +352,13 @@ void test_exponent_editing_sequences(const std::filesystem::path& out_dir) {
     h.press(calc::Key::Digit5);
     h.press(calc::Key::Add);
     h.press(calc::Key::Digit5);
-    check(std::strcmp(calc::calc_debug_home_expression(), "2^((5+5)") == 0,
-          "open parenthesis remains inside exponent before it is closed");
+    check(std::strcmp(calc::calc_debug_home_expression(), "2^((5+5))") == 0,
+          "open parenthesis inside exponent shows auto closing parenthesis");
     auto open_paren = h.render();
     save_screenshot(out_dir / "09_exponent_open_parenthesis_visible", open_paren);
     h.press(calc::Key::RParen);
     check(std::strcmp(calc::calc_debug_home_expression(), "2^((5+5))") == 0,
-          "closed parenthesis remains inside exponent");
+          "typed closing parenthesis replaces exponent placeholder");
     auto closed_paren = h.render();
     save_screenshot(out_dir / "10_exponent_closed_parenthesis_visible", closed_paren);
     check(changed_pixels(open_paren, closed_paren) > 2, "closing parenthesis has visible exponent-local effect");

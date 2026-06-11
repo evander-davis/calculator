@@ -202,6 +202,80 @@ int main() {
     check(calc::calc_debug_home_cursor() == 4,
           "right treats trig prefix as one cursor step");
 
+    calc::calc_debug_set_home_expression("Ans+1", 3);
+    press(calc::Key::Left);
+    check(calc::calc_debug_home_cursor() == 0,
+          "left treats Ans as one cursor step");
+    press(calc::Key::Right);
+    check(calc::calc_debug_home_cursor() == 3,
+          "right treats Ans as one cursor step");
+    press(calc::Key::Delete);
+    check(std::strcmp(calc::calc_debug_home_expression(), "+1") == 0 && calc::calc_debug_home_cursor() == 0,
+          "delete removes Ans as one token");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::Sin);
+    check(std::strcmp(calc::calc_debug_home_expression(), "sin()") == 0 && calc::calc_debug_home_cursor() == 4,
+          "function key inserts grey closing parenthesis placeholder");
+    press(calc::Key::Digit2);
+    press(calc::Key::RParen);
+    check(std::strcmp(calc::calc_debug_home_expression(), "sin(2)") == 0 && calc::calc_debug_home_cursor() == 6,
+          "right parenthesis directly before placeholder replaces it");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::LParen);
+    press(calc::Key::Digit2);
+    press(calc::Key::Right);
+    press(calc::Key::Add);
+    press(calc::Key::Digit3);
+    press(calc::Key::RParen);
+    check(std::strcmp(calc::calc_debug_home_expression(), "(2+3)") == 0,
+          "right parenthesis away from placeholder removes furthest left placeholder");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::LParen);
+    press(calc::Key::Digit2);
+    press(calc::Key::Right);
+    press(calc::Key::Delete);
+    check(std::strcmp(calc::calc_debug_home_expression(), "(2)") == 0 && calc::calc_debug_home_cursor() == 2,
+          "delete to right of grey parenthesis moves left without deleting");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::LParen);
+    press(calc::Key::Delete);
+    check(std::strcmp(calc::calc_debug_home_expression(), "") == 0,
+          "deleting explicit opening parenthesis removes matching grey close");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::Digit2);
+    press(calc::Key::RParen);
+    check(std::strcmp(calc::calc_debug_home_expression(), "(2)") == 0,
+          "unmatched right parenthesis creates grey opening parenthesis");
+    press(calc::Key::Delete);
+    check(std::strcmp(calc::calc_debug_home_expression(), "2") == 0,
+          "deleting explicit closing parenthesis removes matching grey open");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::LParen);
+    press(calc::Key::Digit2);
+    press(calc::Key::RParen);
+    press(calc::Key::Delete);
+    check(std::strcmp(calc::calc_debug_home_expression(), "(2") == 0,
+          "deleting explicit closing parenthesis leaves explicit opening parenthesis");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::Sin);
+    press(calc::Key::Delete);
+    check(std::strcmp(calc::calc_debug_home_expression(), "") == 0,
+          "deleting function opening parenthesis removes matching grey close");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::Digit2);
+    press(calc::Key::RParen);
+    press(calc::Key::Enter);
+    check(std::strcmp(calc::calc_debug_home_expression(), "") == 0,
+          "parser evaluates grey opening parenthesis as normal parenthesis");
+
     calc::calc_debug_set_home_expression("2^3", 3);
     press(calc::Key::Delete);
     check(std::strcmp(calc::calc_debug_home_expression(), "2") == 0 && calc::calc_debug_home_cursor() == 1,
@@ -305,6 +379,21 @@ int main() {
     check(calc::calc_screen() == calc::Screen::YEquals, "y= navigation");
     press(calc::Key::Graph);
     check(calc::calc_screen() == calc::Screen::Graph, "graph navigation");
+    press(calc::Key::Second);
+    press(calc::Key::Graph);
+    check(calc::calc_screen() == calc::Screen::Table, "second graph opens table");
+    calc::calc_render();
+    int table_nonwhite = 0;
+    for (calc::Color pixel : pixels) {
+        if (pixel != 0xffff) {
+            ++table_nonwhite;
+        }
+    }
+    check(table_nonwhite > 1000, "table render non-empty");
+    press(calc::Key::Window);
+    check(calc::calc_screen() == calc::Screen::Window, "window navigation from table");
+    press(calc::Key::Graph);
+    check(calc::calc_screen() == calc::Screen::Graph, "graph navigation from window");
 
     calc::calc_render();
     std::uint32_t graph_nonwhite = 0;

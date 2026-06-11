@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace calc {
@@ -22,6 +23,19 @@ constexpr int kSupW = 8;
 constexpr int kSupH = 10;
 constexpr int kTitleH = 18;
 constexpr int kInputH = 52;
+constexpr int kMaxYEquations = 10;
+constexpr int kWindowRows = 7;
+constexpr int kWindowNumericRows = 6;
+constexpr int kWindowValueCapacity = 24;
+constexpr int kTableColumns = kMaxYEquations + 1;
+constexpr int kTableVisibleYColumns = 4;
+constexpr int kTableVisibleRows = 12;
+constexpr int kTableManualCapacity = 32;
+constexpr int kMaxTracePoiLabels = 4;
+constexpr int kPlotTop = kTitleH;
+constexpr int kPlotBottom = kLcdHeight - 1;
+constexpr char kAutoOpenParen = '\x1c';
+constexpr char kAutoCloseParen = '\x1d';
 
 constexpr CalcReal real(double value) {
     return static_cast<CalcReal>(value);
@@ -33,6 +47,14 @@ struct HistoryEntry {
     bool error;
 };
 
+struct ManualTableEntry {
+    int row;
+    char text[kWindowValueCapacity];
+    int len;
+    int cursor;
+    bool used;
+};
+
 struct CalculatorState {
     Platform* platform;
     Screen screen;
@@ -42,10 +64,23 @@ struct CalculatorState {
     int home_len;
     int home_cursor;
     int home_expr_scroll_x;
-    char y_expr[kExpressionCapacity];
-    int y_len;
-    int y_cursor;
-    int y_expr_scroll_x;
+    char y_expr[kMaxYEquations][kExpressionCapacity];
+    int y_len[kMaxYEquations];
+    int y_cursor[kMaxYEquations];
+    int y_expr_scroll_x[kMaxYEquations];
+    int y_selection;
+    int y_first_row;
+    char window_edit[kWindowNumericRows][kWindowValueCapacity];
+    int window_edit_len[kWindowNumericRows];
+    int window_edit_cursor[kWindowNumericRows];
+    bool table_auto;
+    CalcReal table_start;
+    CalcReal table_step;
+    int table_row;
+    int table_col;
+    int table_first_row;
+    int table_first_col;
+    ManualTableEntry table_manual[kTableManualCapacity];
     HistoryEntry history[kHistoryCapacity];
     int history_count;
     int window_selection;
@@ -55,10 +90,22 @@ struct CalculatorState {
     Key last_key;
     bool second_active;
     bool alpha_active;
+    bool zoom_pending;
     int history_selection;
     int edit_cursor_before_history;
     int history_first_entry;
     bool fraction_output;
+    bool trace_active;
+    int trace_eq;
+    CalcReal trace_x;
+    int trace_grid_index;
+    bool trace_poi_active;
+    bool trace_poi_special;
+    int trace_poi_count;
+    char trace_poi_labels[kMaxTracePoiLabels][32];
+    char trace_entry[kWindowValueCapacity];
+    int trace_entry_len;
+    int trace_entry_cursor;
 };
 
 CalculatorState g{};
@@ -185,6 +232,29 @@ bool insert_text(char* buffer, int& len, int& cursor, const char* text) {
     return true;
 }
 
+bool is_open_paren(char ch) {
+    return ch == '(' || ch == kAutoOpenParen;
+}
+
+bool is_close_paren(char ch) {
+    return ch == ')' || ch == kAutoCloseParen;
+}
+
+char display_char(char ch) {
+    if (ch == kAutoOpenParen) {
+        return '(';
+    }
+    if (ch == kAutoCloseParen) {
+        return ')';
+    }
+    return ch;
+}
+
+bool atomic_text_at(const char* text, int pos, int end, const char* token) {
+    const int len = static_cast<int>(std::strlen(token));
+    return pos >= 0 && pos + len <= end && std::strncmp(text + pos, token, len) == 0;
+}
+
 void delete_range(char* buffer, int& len, int pos, int count) {
     if (pos < 0 || count <= 0 || pos >= len) {
         return;
@@ -198,18 +268,189 @@ void delete_range(char* buffer, int& len, int pos, int count) {
     len -= count;
 }
 
-void insert_template(char* buffer, int& len, int& cursor, const char* before, const char* after) {
-    const int before_len = static_cast<int>(std::strlen(before));
-    if (!insert_text(buffer, len, cursor, before)) {
+int find_furthest_left_auto_close(const char* buffer, int len) {
+    for (int i = 0; i < len; ++i) {
+        if (buffer[i] == kAutoCloseParen) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int find_furthest_right_auto_open(const char* buffer, int len) {
+    for (int i = len - 1; i >= 0; --i) {
+        if (buffer[i] == kAutoOpenParen) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void delete_auto_placeholder_at(char* buffer, int& len, int& cursor, int pos) {
+    if (pos < 0 || pos >= len) {
         return;
     }
-    const int inner_cursor = cursor;
-    if (insert_text(buffer, len, cursor, after)) {
-        cursor = inner_cursor;
-    } else {
-        cursor = inner_cursor;
+    delete_range(buffer, len, pos, 1);
+    if (cursor > pos) {
+        --cursor;
     }
-    (void)before_len;
+}
+
+int matching_auto_close_for_explicit_open(const char* buffer, int len, int open_pos) {
+    if (open_pos < 0 || open_pos >= len || buffer[open_pos] != '(') {
+        return -1;
+    }
+    int depth = 0;
+    for (int i = open_pos; i < len; ++i) {
+        if (is_open_paren(buffer[i])) {
+            ++depth;
+        } else if (is_close_paren(buffer[i])) {
+            --depth;
+            if (depth == 0) {
+                return buffer[i] == kAutoCloseParen ? i : -1;
+            }
+        }
+    }
+    return -1;
+}
+
+int matching_auto_open_for_explicit_close(const char* buffer, int close_pos) {
+    if (close_pos < 0 || buffer[close_pos] != ')') {
+        return -1;
+    }
+    int depth = 0;
+    for (int i = close_pos; i >= 0; --i) {
+        if (is_close_paren(buffer[i])) {
+            ++depth;
+        } else if (is_open_paren(buffer[i])) {
+            --depth;
+            if (depth == 0) {
+                return buffer[i] == kAutoOpenParen ? i : -1;
+            }
+        }
+    }
+    return -1;
+}
+
+void delete_explicit_paren_and_auto_pair(char* buffer, int& len, int& cursor, int paren_pos) {
+    int auto_pos = -1;
+    if (paren_pos >= 0 && paren_pos < len && buffer[paren_pos] == '(') {
+        auto_pos = matching_auto_close_for_explicit_open(buffer, len, paren_pos);
+    } else if (paren_pos >= 0 && paren_pos < len && buffer[paren_pos] == ')') {
+        auto_pos = matching_auto_open_for_explicit_close(buffer, paren_pos);
+    }
+    if (auto_pos > paren_pos) {
+        delete_auto_placeholder_at(buffer, len, cursor, auto_pos);
+        delete_range(buffer, len, paren_pos, 1);
+    } else {
+        delete_range(buffer, len, paren_pos, 1);
+        if (auto_pos >= 0) {
+            delete_auto_placeholder_at(buffer, len, cursor, auto_pos);
+        }
+    }
+    if (cursor > paren_pos) {
+        --cursor;
+    }
+}
+
+int unmatched_close_count(const char* buffer, int len) {
+    int depth = 0;
+    int unmatched = 0;
+    for (int i = 0; i < len; ++i) {
+        if (is_open_paren(buffer[i])) {
+            ++depth;
+        } else if (is_close_paren(buffer[i])) {
+            if (depth > 0) {
+                --depth;
+            } else {
+                ++unmatched;
+            }
+        }
+    }
+    return unmatched;
+}
+
+bool insert_auto_open_at_start(char* buffer, int& len, int& cursor) {
+    int start = 0;
+    if (!insert_text(buffer, len, start, "\x1c")) {
+        return false;
+    }
+    if (cursor >= 0) {
+        ++cursor;
+    }
+    return true;
+}
+
+bool insert_open_paren_auto(char* buffer, int& len, int& cursor) {
+    if (cursor > 0 && buffer[cursor - 1] == kAutoOpenParen) {
+        buffer[cursor - 1] = '(';
+        return true;
+    }
+    const int replaced = find_furthest_right_auto_open(buffer, len);
+    if (replaced >= 0) {
+        if (!insert_text(buffer, len, cursor, "(")) {
+            return false;
+        }
+        delete_auto_placeholder_at(buffer, len, cursor, replaced);
+        return true;
+    }
+    if (!insert_text(buffer, len, cursor, "(")) {
+        return false;
+    }
+    const int inner_cursor = cursor;
+    if (!insert_text(buffer, len, cursor, "\x1d")) {
+        return true;
+    }
+    cursor = inner_cursor;
+    return true;
+}
+
+bool insert_close_paren_auto(char* buffer, int& len, int& cursor) {
+    if (cursor < len && buffer[cursor] == kAutoCloseParen) {
+        buffer[cursor] = ')';
+        ++cursor;
+        return true;
+    }
+    if (!insert_text(buffer, len, cursor, ")")) {
+        return false;
+    }
+    const int replaced = find_furthest_left_auto_close(buffer, len);
+    if (replaced >= 0) {
+        delete_auto_placeholder_at(buffer, len, cursor, replaced);
+        return true;
+    }
+    while (unmatched_close_count(buffer, len) > 0) {
+        if (!insert_auto_open_at_start(buffer, len, cursor)) {
+            return true;
+        }
+    }
+    return true;
+}
+
+bool insert_function_open_auto(char* buffer, int& len, int& cursor, const char* text) {
+    if (!insert_text(buffer, len, cursor, text)) {
+        return false;
+    }
+    const int inner_cursor = cursor;
+    if (!insert_text(buffer, len, cursor, "\x1d")) {
+        return true;
+    }
+    cursor = inner_cursor;
+    return true;
+}
+
+void sanitize_expression(const char* source, char* out, std::size_t out_size) {
+    if (out == nullptr || out_size == 0u) {
+        return;
+    }
+    out[0] = '\0';
+    std::size_t pos = 0;
+    if (source == nullptr) {
+        return;
+    }
+    for (const char* p = source; *p != '\0'; ++p) {
+        append_char(out, out_size, pos, display_char(*p));
+    }
 }
 
 void append_or_ans(char* buffer, int& len, int& cursor, const char* op_text) {
@@ -260,14 +501,26 @@ void backspace(char* buffer, int& len, int& cursor) {
     if (cursor <= 0 || len <= 0) {
         return;
     }
-    const char* atomic_functions[] = {"sin(", "cos(", "tan(", "asin(", "acos(", "atan("};
+    if (buffer[cursor - 1] == kAutoOpenParen || buffer[cursor - 1] == kAutoCloseParen) {
+        --cursor;
+        return;
+    }
+    const char* atomic_functions[] = {"sin(", "cos(", "tan(", "asin(", "acos(", "atan(", "Ans"};
     for (const char* name : atomic_functions) {
         const int name_len = static_cast<int>(std::strlen(name));
         if (cursor >= name_len && std::strncmp(buffer + cursor - name_len, name, name_len) == 0) {
+            const int auto_close = matching_auto_close_for_explicit_open(buffer, len, cursor - 1);
+            if (auto_close >= 0) {
+                delete_auto_placeholder_at(buffer, len, cursor, auto_close);
+            }
             delete_range(buffer, len, cursor - name_len, name_len);
             cursor -= name_len;
             return;
         }
+    }
+    if (buffer[cursor - 1] == '(' || buffer[cursor - 1] == ')') {
+        delete_explicit_paren_and_auto_pair(buffer, len, cursor, cursor - 1);
+        return;
     }
     for (int i = cursor - 1; i < len; ++i) {
         buffer[i] = buffer[i + 1];
@@ -284,6 +537,19 @@ void normalize_cursor_to_visible(const char* buffer, int len, int& cursor);
 void ensure_cursor_visible(const char* expr, int len, int cursor, int visible_w, int& scroll_x);
 int history_row_height(const HistoryEntry& entry);
 void ensure_history_selection_visible();
+void ensure_y_selection_visible();
+void start_trace();
+void move_trace_horizontal(int direction);
+void move_trace_vertical(int direction);
+void clear_trace_entry();
+bool insert_trace_entry_key(Key key);
+bool parse_trace_entry(CalcReal& value);
+void jump_trace_to_x(CalcReal x);
+void clear_trace_poi_labels();
+void update_trace_current_poi_labels(bool special_stop);
+bool evaluate_y_at(int eq, CalcReal x, CalcReal& y);
+int trace_grid_index_for_x(CalcReal x);
+void ensure_trace_cursor_visible();
 
 bool delete_blank_fraction_slot(char* buffer, int& len, int& cursor) {
     int best_start = -1;
@@ -555,6 +821,207 @@ void format_value(CalcReal value, char* out, std::size_t size) {
     append_fixed_abs(out, size, pos, value, 6);
 }
 
+CalcReal round_table_value(CalcReal value) {
+    if (!std::isfinite(value)) {
+        return value;
+    }
+    constexpr CalcReal scale = static_cast<CalcReal>(10000.0);
+    return std::round(value * scale) / scale;
+}
+
+void trim_fixed_text(char* out) {
+    char* dot = std::strchr(out, '.');
+    if (dot == nullptr) {
+        return;
+    }
+    char* end = out + std::strlen(out) - 1;
+    while (end > dot && *end == '0') {
+        *end = '\0';
+        --end;
+    }
+    if (end == dot) {
+        *end = '\0';
+    }
+}
+
+void normalize_scientific_exponent(char* out) {
+    char* e = std::strchr(out, 'E');
+    if (e == nullptr) {
+        return;
+    }
+    if (e[1] == '+') {
+        std::memmove(e + 1, e + 2, std::strlen(e + 2) + 1u);
+    }
+    const int exp_start = e[1] == '-' ? 2 : 1;
+    while (e[exp_start] == '0' && e[exp_start + 1] != '\0') {
+        std::memmove(e + exp_start, e + exp_start + 1, std::strlen(e + exp_start + 1) + 1u);
+    }
+}
+
+int scientific_exponent_chars(CalcReal value) {
+    char text[16]{};
+    std::snprintf(text, sizeof(text), "%.0E", static_cast<double>(value));
+    normalize_scientific_exponent(text);
+    const char* e = std::strchr(text, 'E');
+    return e == nullptr ? 0 : static_cast<int>(std::strlen(e));
+}
+
+void format_table_value(CalcReal value, char* out, std::size_t size, int max_chars) {
+    if (out == nullptr || size == 0u) {
+        return;
+    }
+    out[0] = '\0';
+    if (!std::isfinite(value)) {
+        copy_string(out, size, "ERR");
+        return;
+    }
+    if (std::fabs(value) < real(0.00000000005)) {
+        value = real(0.0);
+    }
+    if (max_chars < 4) {
+        max_chars = 4;
+    }
+    const CalcReal abs_value = value < real(0.0) ? -value : value;
+    if (abs_value > real(0.0) && (abs_value < real(0.001) || abs_value > real(100000.0))) {
+        const int sign_chars = value < real(0.0) ? 1 : 0;
+        const int exponent_chars = scientific_exponent_chars(value);
+        int precision = max_chars - sign_chars - 1 - exponent_chars;
+        if (precision > 0) {
+            --precision;
+        }
+        if (precision < 0) {
+            precision = 0;
+        }
+        std::snprintf(out, size, "%.*E", precision, static_cast<double>(value));
+        normalize_scientific_exponent(out);
+        while (static_cast<int>(std::strlen(out)) > max_chars && precision > 0) {
+            --precision;
+            std::snprintf(out, size, "%.*E", precision, static_cast<double>(value));
+            normalize_scientific_exponent(out);
+        }
+        return;
+    }
+    value = round_table_value(value);
+    const int sign_chars = value < real(0.0) ? 1 : 0;
+    int whole_digits = 1;
+    if (abs_value >= real(1.0)) {
+        whole_digits = 0;
+        CalcReal whole = std::floor(abs_value);
+        while (whole >= real(1.0)) {
+            whole /= real(10.0);
+            ++whole_digits;
+        }
+    }
+    int decimals = max_chars - sign_chars - whole_digits - 1;
+    if (decimals < 0) {
+        decimals = 0;
+    }
+    if (decimals > 4) {
+        decimals = 4;
+    }
+    std::snprintf(out, size, "%.*f", decimals, static_cast<double>(value));
+    trim_fixed_text(out);
+}
+
+Color graph_color(int index) {
+    static constexpr Color colors[kMaxYEquations] = {
+        0xf800, 0x001f, 0x07e0, 0xf81f, 0xffe0,
+        0x07ff, 0xfd20, 0x780f, 0x03ef, 0x8410
+    };
+    if (index < 0 || index >= kMaxYEquations) {
+        return kRed;
+    }
+    return colors[index];
+}
+
+CalcReal default_window_value(int index) {
+    switch (index) {
+        case 0:
+        case 1:
+        case 2:
+        case 3: return index == 0 || index == 2 ? real(-10.0) : real(10.0);
+        case 4: return real(0.0);
+        case 5: return real(1.0);
+        default: return real(0.0);
+    }
+}
+
+void sync_window_edit_from_values() {
+    CalcReal values[kWindowNumericRows] = {
+        g.window.xmin, g.window.xmax, g.window.ymin, g.window.ymax, g.table_start, g.table_step
+    };
+    for (int i = 0; i < kWindowNumericRows; ++i) {
+        format_value(values[i], g.window_edit[i], sizeof(g.window_edit[i]));
+        g.window_edit_len[i] = static_cast<int>(std::strlen(g.window_edit[i]));
+        g.window_edit_cursor[i] = g.window_edit_len[i];
+    }
+}
+
+bool parse_window_value(int index, CalcReal& value) {
+    if (index < 0 || index >= kWindowNumericRows || g.window_edit_len[index] == 0) {
+        value = default_window_value(index);
+        return true;
+    }
+    EvalContext copy = g.eval;
+    EvalResult result = evaluate_expression(g.window_edit[index], copy);
+    if (!result.ok || std::fabs(result.imag) >= real(0.0000000005) || !std::isfinite(result.value)) {
+        return false;
+    }
+    value = result.value;
+    return true;
+}
+
+void commit_window_edits() {
+    CalcReal values[kWindowNumericRows]{};
+    for (int i = 0; i < kWindowNumericRows; ++i) {
+        if (!parse_window_value(i, values[i])) {
+            values[i] = default_window_value(i);
+        }
+    }
+    g.window.xmin = values[0];
+    g.window.xmax = values[1];
+    g.window.ymin = values[2];
+    g.window.ymax = values[3];
+    g.table_start = values[4];
+    g.table_step = values[5];
+    if (g.window.xmax <= g.window.xmin + real(0.1)) {
+        g.window.xmax = g.window.xmin + real(0.1);
+        format_value(g.window.xmax, g.window_edit[1], sizeof(g.window_edit[1]));
+        g.window_edit_len[1] = static_cast<int>(std::strlen(g.window_edit[1]));
+        g.window_edit_cursor[1] = g.window_edit_len[1];
+    }
+    if (g.window.ymax <= g.window.ymin + real(0.1)) {
+        g.window.ymax = g.window.ymin + real(0.1);
+        format_value(g.window.ymax, g.window_edit[3], sizeof(g.window_edit[3]));
+        g.window_edit_len[3] = static_cast<int>(std::strlen(g.window_edit[3]));
+        g.window_edit_cursor[3] = g.window_edit_len[3];
+    }
+}
+
+bool insert_window_value_key(Key key, char* buffer, int& len, int& cursor) {
+    switch (key) {
+        case Key::Digit0: return insert_text(buffer, len, cursor, "0");
+        case Key::Digit1: return insert_text(buffer, len, cursor, "1");
+        case Key::Digit2: return insert_text(buffer, len, cursor, "2");
+        case Key::Digit3: return insert_text(buffer, len, cursor, "3");
+        case Key::Digit4: return insert_text(buffer, len, cursor, "4");
+        case Key::Digit5: return insert_text(buffer, len, cursor, "5");
+        case Key::Digit6: return insert_text(buffer, len, cursor, "6");
+        case Key::Digit7: return insert_text(buffer, len, cursor, "7");
+        case Key::Digit8: return insert_text(buffer, len, cursor, "8");
+        case Key::Digit9: return insert_text(buffer, len, cursor, "9");
+        case Key::Dot: return insert_text(buffer, len, cursor, ".");
+        case Key::Negate:
+        case Key::Subtract: return insert_text(buffer, len, cursor, "-");
+        case Key::Add: return insert_text(buffer, len, cursor, "+");
+        case Key::Divide: return insert_text(buffer, len, cursor, "/");
+        case Key::LParen: return insert_text(buffer, len, cursor, "(");
+        case Key::RParen: return insert_text(buffer, len, cursor, ")");
+        case Key::ConstE: return insert_text(buffer, len, cursor, "E");
+        default: return false;
+    }
+}
+
 bool near_zero(CalcReal value) {
     return std::fabs(value) < real(0.0000000005);
 }
@@ -799,6 +1266,7 @@ void evaluate_home() {
         return;
     }
 
+    char sanitized[kExpressionCapacity]{};
     const char* expression = g.home_expr;
     if (g.home_len == 0) {
         if (g.history_count == 0) {
@@ -806,6 +1274,8 @@ void evaluate_home() {
         }
         expression = g.history[0].expression;
     }
+    sanitize_expression(expression, sanitized, sizeof(sanitized));
+    expression = sanitized;
 
     EvalResult result = evaluate_expression(expression, g.eval);
     char formatted[32]{};
@@ -839,22 +1309,22 @@ bool insert_for_key(Key key, char* buffer, int& len, int& cursor) {
         case Key::Power: insert_power_template(buffer, len, cursor); return true;
         case Key::Square: insert_power_value(buffer, len, cursor, "2"); return true;
         case Key::NthRoot: insert_nth_root(buffer, len, cursor); return true;
-        case Key::LParen: return insert_text(buffer, len, cursor, "(");
-        case Key::RParen: return insert_text(buffer, len, cursor, ")");
+        case Key::LParen: return insert_open_paren_auto(buffer, len, cursor);
+        case Key::RParen: return insert_close_paren_auto(buffer, len, cursor);
         case Key::Comma: return insert_text(buffer, len, cursor, ",");
         case Key::Negate: return insert_text(buffer, len, cursor, "-");
         case Key::Store: append_or_ans(buffer, len, cursor, "->"); return true;
         case Key::Fraction: insert_fraction(buffer, len, cursor); return true;
         case Key::Equal: return insert_text(buffer, len, cursor, "=");
-        case Key::Sin: return insert_text(buffer, len, cursor, "sin(");
-        case Key::Cos: return insert_text(buffer, len, cursor, "cos(");
-        case Key::Tan: return insert_text(buffer, len, cursor, "tan(");
-        case Key::ASin: return insert_text(buffer, len, cursor, "asin(");
-        case Key::ACos: return insert_text(buffer, len, cursor, "acos(");
-        case Key::ATan: return insert_text(buffer, len, cursor, "atan(");
-        case Key::Sqrt: insert_template(buffer, len, cursor, "sqrt(", ")"); return true;
-        case Key::Log: return insert_text(buffer, len, cursor, "log(");
-        case Key::Ln: return insert_text(buffer, len, cursor, "ln(");
+        case Key::Sin: return insert_function_open_auto(buffer, len, cursor, "sin(");
+        case Key::Cos: return insert_function_open_auto(buffer, len, cursor, "cos(");
+        case Key::Tan: return insert_function_open_auto(buffer, len, cursor, "tan(");
+        case Key::ASin: return insert_function_open_auto(buffer, len, cursor, "asin(");
+        case Key::ACos: return insert_function_open_auto(buffer, len, cursor, "acos(");
+        case Key::ATan: return insert_function_open_auto(buffer, len, cursor, "atan(");
+        case Key::Sqrt: return insert_function_open_auto(buffer, len, cursor, "sqrt(");
+        case Key::Log: return insert_function_open_auto(buffer, len, cursor, "log(");
+        case Key::Ln: return insert_function_open_auto(buffer, len, cursor, "ln(");
         case Key::Ans: return insert_text(buffer, len, cursor, "Ans");
         case Key::Pi: return insert_text(buffer, len, cursor, "pi");
         case Key::ConstE: return insert_text(buffer, len, cursor, "e");
@@ -924,6 +1394,39 @@ void zoom_graph(CalcReal factor) {
     g.window.ymax = cy + hy;
 }
 
+void zoom_graph_at(CalcReal factor, CalcReal cx, CalcReal cy) {
+    const CalcReal hx = (g.window.xmax - g.window.xmin) * real(0.5) * factor;
+    const CalcReal hy = (g.window.ymax - g.window.ymin) * real(0.5) * factor;
+    g.window.xmin = cx - hx;
+    g.window.xmax = cx + hx;
+    g.window.ymin = cy - hy;
+    g.window.ymax = cy + hy;
+}
+
+void zoom_graph_trace_or_origin(CalcReal factor) {
+    CalcReal cx = real(0.0);
+    CalcReal cy = real(0.0);
+    if (g.trace_active) {
+        CalcReal trace_y = real(0.0);
+        if (evaluate_y_at(g.trace_eq, g.trace_x, trace_y)) {
+            cx = g.trace_x;
+            cy = trace_y;
+        }
+    }
+    zoom_graph_at(factor, cx, cy);
+    if (g.trace_active) {
+        g.trace_grid_index = trace_grid_index_for_x(g.trace_x);
+        update_trace_current_poi_labels(g.trace_poi_special);
+    }
+}
+
+void reset_graph_window() {
+    g.window.xmin = real(-10.0);
+    g.window.xmax = real(10.0);
+    g.window.ymin = real(-10.0);
+    g.window.ymax = real(10.0);
+}
+
 Key second_key(Key key) {
     switch (key) {
         case Key::Negate: return Key::Ans;
@@ -935,6 +1438,8 @@ Key second_key(Key key) {
         case Key::Tan: return Key::ATan;
         case Key::FracDecimal: return Key::Pi;
         case Key::Divide: return Key::ConstE;
+        case Key::Comma: return Key::ConstE;
+        case Key::Graph: return Key::Table;
         default: return key;
     }
 }
@@ -996,14 +1501,33 @@ Key translate_layer_key(Key key) {
 
 void handle_global_key(Key key) {
     switch (key) {
-        case Key::Home: g.screen = Screen::Home; break;
-        case Key::Graph: g.screen = Screen::Graph; break;
-        case Key::YEquals: g.screen = Screen::YEquals; break;
-        case Key::Window: g.screen = Screen::Window; break;
-        case Key::Settings: g.screen = Screen::Settings; break;
-        case Key::Mode: g.screen = Screen::Settings; break;
-        case Key::About: g.screen = Screen::About; break;
-        case Key::On: g.screen = Screen::Home; break;
+        case Key::Home: g.zoom_pending = false; g.screen = Screen::Home; break;
+        case Key::Graph: g.zoom_pending = false; g.screen = Screen::Graph; break;
+        case Key::Table:
+            g.zoom_pending = false;
+            commit_window_edits();
+            g.screen = Screen::Table;
+            break;
+        case Key::YEquals:
+            g.zoom_pending = false;
+            g.trace_active = false;
+            clear_trace_poi_labels();
+            clear_trace_entry();
+            g.screen = Screen::YEquals;
+            break;
+        case Key::Window:
+            g.zoom_pending = false;
+            sync_window_edit_from_values();
+            g.window_edit_cursor[g.window_selection] = g.window_edit_len[g.window_selection];
+            g.trace_active = false;
+            clear_trace_poi_labels();
+            clear_trace_entry();
+            g.screen = Screen::Window;
+            break;
+        case Key::Settings: g.zoom_pending = false; g.screen = Screen::Settings; break;
+        case Key::Mode: g.zoom_pending = false; g.screen = Screen::Settings; break;
+        case Key::About: g.zoom_pending = false; g.screen = Screen::About; break;
+        case Key::On: g.zoom_pending = false; g.screen = Screen::Home; break;
         default: break;
     }
 }
@@ -1063,56 +1587,386 @@ void handle_y_key(Key key) {
         g.screen = Screen::Graph;
         return;
     }
-    edit_expression_key(key, g.y_expr, g.y_len, g.y_cursor);
-    ensure_cursor_visible(g.y_expr, g.y_len, g.y_cursor, kLcdWidth - 38, g.y_expr_scroll_x);
+    if ((key == Key::Up || key == Key::Down) &&
+        (move_fraction_vertical(g.y_expr[g.y_selection], g.y_len[g.y_selection], g.y_cursor[g.y_selection], key) ||
+         move_nth_root_vertical(g.y_expr[g.y_selection], g.y_len[g.y_selection], g.y_cursor[g.y_selection], key))) {
+        ensure_cursor_visible(g.y_expr[g.y_selection],
+                              g.y_len[g.y_selection],
+                              g.y_cursor[g.y_selection],
+                              kLcdWidth - 62,
+                              g.y_expr_scroll_x[g.y_selection]);
+        ensure_y_selection_visible();
+        return;
+    }
+    if (key == Key::Up) {
+        if (g.y_selection > 0) {
+            --g.y_selection;
+            g.y_cursor[g.y_selection] = g.y_len[g.y_selection];
+        }
+        ensure_y_selection_visible();
+        return;
+    }
+    if (key == Key::Down) {
+        if (g.y_selection + 1 < kMaxYEquations) {
+            ++g.y_selection;
+            g.y_cursor[g.y_selection] = g.y_len[g.y_selection];
+        }
+        ensure_y_selection_visible();
+        return;
+    }
+    edit_expression_key(key, g.y_expr[g.y_selection], g.y_len[g.y_selection], g.y_cursor[g.y_selection]);
+    ensure_cursor_visible(g.y_expr[g.y_selection],
+                          g.y_len[g.y_selection],
+                          g.y_cursor[g.y_selection],
+                          kLcdWidth - 62,
+                          g.y_expr_scroll_x[g.y_selection]);
+    ensure_y_selection_visible();
 }
 
 void handle_graph_key(Key key) {
+    if (key == Key::Zoom) {
+        if (g.zoom_pending) {
+            reset_graph_window();
+            if (g.trace_active) {
+                g.trace_grid_index = trace_grid_index_for_x(g.trace_x);
+                update_trace_current_poi_labels(g.trace_poi_special);
+                ensure_trace_cursor_visible();
+            }
+            sync_window_edit_from_values();
+            g.zoom_pending = false;
+        } else {
+            g.zoom_pending = true;
+        }
+        return;
+    }
+    if (g.zoom_pending) {
+        g.zoom_pending = false;
+        if (key == Key::Add) {
+            zoom_graph_trace_or_origin(real(0.75));
+            ensure_trace_cursor_visible();
+            sync_window_edit_from_values();
+            return;
+        }
+        if (key == Key::Subtract) {
+            zoom_graph_trace_or_origin(real(1.25));
+            ensure_trace_cursor_visible();
+            sync_window_edit_from_values();
+            return;
+        }
+        if (key == Key::Left) {
+            pan_graph(real(-0.35), real(0.0));
+            ensure_trace_cursor_visible();
+            sync_window_edit_from_values();
+            return;
+        }
+        if (key == Key::Right) {
+            pan_graph(real(0.35), real(0.0));
+            ensure_trace_cursor_visible();
+            sync_window_edit_from_values();
+            return;
+        }
+        if (key == Key::Up) {
+            pan_graph(real(0.0), real(0.35));
+            ensure_trace_cursor_visible();
+            sync_window_edit_from_values();
+            return;
+        }
+        if (key == Key::Down) {
+            pan_graph(real(0.0), real(-0.35));
+            ensure_trace_cursor_visible();
+            sync_window_edit_from_values();
+            return;
+        }
+    }
+    if (key == Key::Trace) {
+        start_trace();
+        return;
+    }
+    if (g.trace_active) {
+        if (insert_trace_entry_key(key)) {
+            clear_trace_poi_labels();
+            return;
+        }
+        if (key == Key::Back || key == Key::Delete) {
+            if (g.trace_entry_len > 0) {
+                backspace(g.trace_entry, g.trace_entry_len, g.trace_entry_cursor);
+            }
+            return;
+        }
+        if (key == Key::Enter) {
+            CalcReal x = real(0.0);
+            if (parse_trace_entry(x)) {
+                jump_trace_to_x(x);
+            } else {
+                clear_trace_entry();
+            }
+            return;
+        }
+        switch (key) {
+            case Key::Left: move_trace_horizontal(-1); return;
+            case Key::Right: move_trace_horizontal(1); return;
+            case Key::Up: move_trace_vertical(1); return;
+            case Key::Down: move_trace_vertical(-1); return;
+            case Key::Clear:
+                if (g.trace_entry_len > 0) {
+                    clear_trace_entry();
+                    return;
+                }
+                g.trace_active = false;
+                clear_trace_poi_labels();
+                clear_trace_entry();
+                return;
+            default: break;
+        }
+    }
     switch (key) {
-        case Key::Left: pan_graph(real(-0.1), real(0.0)); break;
-        case Key::Right: pan_graph(real(0.1), real(0.0)); break;
-        case Key::Up: pan_graph(real(0.0), real(0.1)); break;
-        case Key::Down: pan_graph(real(0.0), real(-0.1)); break;
-        case Key::Add: zoom_graph(real(0.75)); break;
-        case Key::Subtract: zoom_graph(real(1.25)); break;
+        case Key::Left: pan_graph(real(-0.1), real(0.0)); ensure_trace_cursor_visible(); break;
+        case Key::Right: pan_graph(real(0.1), real(0.0)); ensure_trace_cursor_visible(); break;
+        case Key::Up: pan_graph(real(0.0), real(0.1)); ensure_trace_cursor_visible(); break;
+        case Key::Down: pan_graph(real(0.0), real(-0.1)); ensure_trace_cursor_visible(); break;
         default: break;
     }
 }
 
 void handle_window_key(Key key) {
-    CalcReal* values[4] = {&g.window.xmin, &g.window.xmax, &g.window.ymin, &g.window.ymax};
     switch (key) {
         case Key::Up:
+            commit_window_edits();
             if (g.window_selection > 0) {
                 --g.window_selection;
+                if (g.window_selection < kWindowNumericRows) {
+                    g.window_edit_cursor[g.window_selection] = g.window_edit_len[g.window_selection];
+                }
             }
             break;
         case Key::Down:
-            if (g.window_selection < 3) {
+            commit_window_edits();
+            if (g.window_selection + 1 < kWindowRows) {
                 ++g.window_selection;
+                if (g.window_selection < kWindowNumericRows) {
+                    g.window_edit_cursor[g.window_selection] = g.window_edit_len[g.window_selection];
+                }
             }
             break;
-        case Key::Add:
         case Key::Right:
-            *values[g.window_selection] += real(1.0);
+            if (g.window_selection == kWindowNumericRows) {
+                g.table_auto = false;
+                break;
+            }
+            if (g.window_selection >= kWindowNumericRows) {
+                break;
+            }
+            if (g.window_edit_cursor[g.window_selection] < g.window_edit_len[g.window_selection]) {
+                ++g.window_edit_cursor[g.window_selection];
+            }
             break;
-        case Key::Subtract:
         case Key::Left:
-            *values[g.window_selection] -= real(1.0);
+            if (g.window_selection == kWindowNumericRows) {
+                g.table_auto = true;
+                break;
+            }
+            if (g.window_selection >= kWindowNumericRows) {
+                break;
+            }
+            if (g.window_edit_cursor[g.window_selection] > 0) {
+                --g.window_edit_cursor[g.window_selection];
+            }
+            break;
+        case Key::Delete:
+        case Key::Back:
+            if (g.window_selection >= kWindowNumericRows) {
+                break;
+            }
+            if (g.window_edit_cursor[g.window_selection] > 0) {
+                delete_range(g.window_edit[g.window_selection],
+                             g.window_edit_len[g.window_selection],
+                             g.window_edit_cursor[g.window_selection] - 1,
+                             1);
+                --g.window_edit_cursor[g.window_selection];
+            }
+            break;
+        case Key::Clear:
+            if (g.window_selection >= kWindowNumericRows) {
+                break;
+            }
+            g.window_edit[g.window_selection][0] = '\0';
+            g.window_edit_len[g.window_selection] = 0;
+            g.window_edit_cursor[g.window_selection] = 0;
             break;
         case Key::Enter:
+            if (g.window_selection == kWindowNumericRows) {
+                g.table_auto = !g.table_auto;
+                break;
+            }
+            commit_window_edits();
+            break;
         case Key::Graph:
+            commit_window_edits();
             g.screen = Screen::Graph;
             break;
+        default: {
+            if (g.window_selection >= kWindowNumericRows) {
+                break;
+            }
+            const int before_len = g.window_edit_len[g.window_selection];
+            const int before_cursor = g.window_edit_cursor[g.window_selection];
+            if (!insert_window_value_key(key,
+                                         g.window_edit[g.window_selection],
+                                         g.window_edit_len[g.window_selection],
+                                         g.window_edit_cursor[g.window_selection])) {
+                g.window_edit_len[g.window_selection] = before_len;
+                g.window_edit_cursor[g.window_selection] = before_cursor;
+            }
+            break;
+        }
+    }
+}
+
+void ensure_table_selection_visible() {
+    if (g.table_col < 0) {
+        g.table_col = 0;
+    }
+    if (g.table_col >= kTableColumns) {
+        g.table_col = kTableColumns - 1;
+    }
+    if (g.table_row < g.table_first_row) {
+        g.table_first_row = g.table_row;
+    }
+    if (g.table_row >= g.table_first_row + kTableVisibleRows) {
+        g.table_first_row = g.table_row - kTableVisibleRows + 1;
+    }
+    if (g.table_col <= 0) {
+        g.table_first_col = 1;
+    } else if (g.table_col < g.table_first_col) {
+        g.table_first_col = g.table_col;
+    }
+    if (g.table_col > 0 && g.table_col >= g.table_first_col + kTableVisibleYColumns) {
+        g.table_first_col = g.table_col - kTableVisibleYColumns + 1;
+    }
+    if (g.table_first_col < 1) {
+        g.table_first_col = 1;
+    }
+    if (g.table_first_col > kTableColumns - kTableVisibleYColumns) {
+        g.table_first_col = kTableColumns - kTableVisibleYColumns;
+    }
+}
+
+ManualTableEntry* find_manual_table_entry(int row) {
+    for (int i = 0; i < kTableManualCapacity; ++i) {
+        if (g.table_manual[i].used && g.table_manual[i].row == row) {
+            return &g.table_manual[i];
+        }
+    }
+    return nullptr;
+}
+
+ManualTableEntry* manual_table_entry_for_edit(int row) {
+    ManualTableEntry* existing = find_manual_table_entry(row);
+    if (existing != nullptr) {
+        return existing;
+    }
+    for (int i = 0; i < kTableManualCapacity; ++i) {
+        if (!g.table_manual[i].used) {
+            g.table_manual[i] = ManualTableEntry{};
+            g.table_manual[i].row = row;
+            g.table_manual[i].used = true;
+            return &g.table_manual[i];
+        }
+    }
+    ManualTableEntry& recycled = g.table_manual[0];
+    recycled = ManualTableEntry{};
+    recycled.row = row;
+    recycled.used = true;
+    return &recycled;
+}
+
+bool table_manual_x_value(int row, CalcReal& value) {
+    ManualTableEntry* entry = find_manual_table_entry(row);
+    if (entry == nullptr || entry->len == 0) {
+        return false;
+    }
+    EvalContext copy = g.eval;
+    EvalResult result = evaluate_expression(entry->text, copy);
+    if (!result.ok || !near_zero(result.imag) || !std::isfinite(result.value)) {
+        return false;
+    }
+    value = result.value;
+    return true;
+}
+
+CalcReal table_x_for_row(int row) {
+    const CalcReal step = std::fabs(g.table_step) < real(0.0000000005) ? real(1.0) : g.table_step;
+    return g.table_start + static_cast<CalcReal>(row) * step;
+}
+
+void handle_table_key(Key key) {
+    switch (key) {
+        case Key::Graph:
+            g.screen = Screen::Graph;
+            return;
+        case Key::Window:
+            sync_window_edit_from_values();
+            g.screen = Screen::Window;
+            return;
+        case Key::YEquals:
+            g.screen = Screen::YEquals;
+            return;
+        case Key::Up:
+            --g.table_row;
+            break;
+        case Key::Down:
+            ++g.table_row;
+            break;
+        case Key::Left:
+            if (!g.table_auto && g.table_col == 0) {
+                ManualTableEntry* entry = manual_table_entry_for_edit(g.table_row);
+                if (entry->cursor > 0) {
+                    --entry->cursor;
+                    break;
+                }
+            }
+            if (g.table_col > 0) {
+                --g.table_col;
+            }
+            break;
+        case Key::Right:
+            if (!g.table_auto && g.table_col == 0) {
+                ManualTableEntry* entry = manual_table_entry_for_edit(g.table_row);
+                if (entry->cursor < entry->len) {
+                    ++entry->cursor;
+                    break;
+                }
+            }
+            if (g.table_col + 1 < kTableColumns) {
+                ++g.table_col;
+            }
+            break;
+        case Key::Delete:
+        case Key::Back:
+            if (!g.table_auto && g.table_col == 0) {
+                ManualTableEntry* entry = manual_table_entry_for_edit(g.table_row);
+                if (entry->cursor > 0) {
+                    delete_range(entry->text, entry->len, entry->cursor - 1, 1);
+                    --entry->cursor;
+                }
+            }
+            break;
+        case Key::Clear:
+            if (!g.table_auto && g.table_col == 0) {
+                ManualTableEntry* entry = manual_table_entry_for_edit(g.table_row);
+                entry->text[0] = '\0';
+                entry->len = 0;
+                entry->cursor = 0;
+            }
+            break;
         default:
+            if (!g.table_auto && g.table_col == 0) {
+                ManualTableEntry* entry = manual_table_entry_for_edit(g.table_row);
+                insert_window_value_key(key, entry->text, entry->len, entry->cursor);
+            }
             break;
     }
-    if (g.window.xmax <= g.window.xmin + real(0.1)) {
-        g.window.xmax = g.window.xmin + real(0.1);
-    }
-    if (g.window.ymax <= g.window.ymin + real(0.1)) {
-        g.window.ymax = g.window.ymin + real(0.1);
-    }
+    ensure_table_selection_visible();
 }
 
 void handle_settings_key(Key key) {
@@ -1196,9 +2050,9 @@ void draw_cursor(Display& display, int x, int y, int h, Color color) {
 int matching_paren(const char* expr, int open, int end) {
     int depth = 0;
     for (int i = open; i < end; ++i) {
-        if (expr[i] == '(') {
+        if (is_open_paren(expr[i])) {
             ++depth;
-        } else if (expr[i] == ')') {
+        } else if (is_close_paren(expr[i])) {
             --depth;
             if (depth == 0) {
                 return i;
@@ -1209,11 +2063,11 @@ int matching_paren(const char* expr, int open, int end) {
 }
 
 int fraction_end_at(const char* expr, int pos, int end, int& num_start, int& num_end, int& den_start, int& den_end) {
-    if (pos >= end || expr[pos] != '(') {
+    if (pos >= end || !is_open_paren(expr[pos])) {
         return -1;
     }
     const int first_close = matching_paren(expr, pos, end);
-    if (first_close < 0 || first_close + 2 >= end || expr[first_close + 1] != '/' || expr[first_close + 2] != '(') {
+    if (first_close < 0 || first_close + 2 >= end || expr[first_close + 1] != '/' || !is_open_paren(expr[first_close + 2])) {
         return -1;
     }
     const int second_close = matching_paren(expr, first_close + 2, end);
@@ -1233,7 +2087,7 @@ int nth_root_end_at(const char* expr, int pos, int end, int& index_start, int& i
     }
     const int first_open = pos + 4;
     const int first_close = matching_paren(expr, first_open, end);
-    if (first_close < 0 || first_close + 1 >= end || expr[first_close + 1] != '(') {
+    if (first_close < 0 || first_close + 1 >= end || !is_open_paren(expr[first_close + 1])) {
         return -1;
     }
     const int second_open = first_close + 1;
@@ -1409,7 +2263,7 @@ int function_call_end(const char* expr, int start, int end) {
     while (i < end && std::isalpha(static_cast<unsigned char>(expr[i]))) {
         ++i;
     }
-    if (i > start && i < end && expr[i] == '(') {
+    if (i > start && i < end && is_open_paren(expr[i])) {
         const int close = matching_paren(expr, i, end);
         if (close >= 0) {
             return close + 1;
@@ -1470,6 +2324,15 @@ ExprBox inverse_trig_prefix_box(bool small) {
     return box_from_ascent(4 * font_w(small) + exp.w, ascent, font_descent(small));
 }
 
+const char* atomic_text_label_at(const char* expr, int start, int end, int& source_end) {
+    source_end = start;
+    if (atomic_text_at(expr, start, end, "Ans")) {
+        source_end = start + 3;
+        return "Ans";
+    }
+    return nullptr;
+}
+
 void exponent_range(const char* expr, int caret, int end, int& visual_start, int& visual_end, int& source_end) {
     visual_start = caret + 1;
     visual_end = visual_start;
@@ -1477,7 +2340,7 @@ void exponent_range(const char* expr, int caret, int end, int& visual_start, int
     if (visual_start >= end) {
         return;
     }
-    if (expr[visual_start] == '(') {
+    if (is_open_paren(expr[visual_start])) {
         const int close = matching_paren(expr, visual_start, end);
         if (close >= 0) {
             visual_start = visual_start + 1;
@@ -1485,7 +2348,7 @@ void exponent_range(const char* expr, int caret, int end, int& visual_start, int
             source_end = close + 1;
             return;
         }
-        if (end - 1 > visual_start && expr[end - 1] == ')') {
+        if (end - 1 > visual_start && is_close_paren(expr[end - 1])) {
             visual_start = visual_start + 1;
             visual_end = end - 1;
             source_end = end;
@@ -1594,6 +2457,20 @@ ExprBox measure_expression_range_impl(const char* expr, int start, int end, bool
                 descent = box.descent;
             }
             i = inverse_source_end;
+            continue;
+        }
+        int atomic_source_end = 0;
+        if (atomic_text_label_at(expr, i, end, atomic_source_end) != nullptr) {
+            const ExprBox box = box_from_ascent(3 * font_w(small), font_ascent(small), font_descent(small));
+            add_node(layout, LayoutKind::TextRun, i, atomic_source_end, small, box);
+            w += box.w;
+            if (box.ascent > ascent) {
+                ascent = box.ascent;
+            }
+            if (box.descent > descent) {
+                descent = box.descent;
+            }
+            i = atomic_source_end;
             continue;
         }
         if (i + 5 <= end && starts_with_at(expr, i, "sqrt(")) {
@@ -1742,6 +2619,14 @@ void draw_expression_range_impl(Display& display, int x, int baseline, const cha
             i = inverse_source_end;
             continue;
         }
+        int atomic_source_end = 0;
+        const char* atomic_label = atomic_text_label_at(expr, i, end, atomic_source_end);
+        if (atomic_label != nullptr) {
+            draw_text_scaled(display, cx, baseline - font_ascent(small), atomic_label, small ? 1 : kTextScale, fg, bg);
+            cx += 3 * font_w(small);
+            i = atomic_source_end;
+            continue;
+        }
         if (i + 5 <= end && starts_with_at(expr, i, "sqrt(")) {
             const int close = matching_paren(expr, i + 4, end);
             const int inner_start = i + 5;
@@ -1782,8 +2667,9 @@ void draw_expression_range_impl(Display& display, int x, int baseline, const cha
             i = source_end;
             continue;
         }
-        char text[2] = {expr[i], '\0'};
-        draw_text_scaled(display, cx, baseline - font_ascent(small), text, small ? 1 : kTextScale, fg, bg);
+        char text[2] = {display_char(expr[i]), '\0'};
+        const Color text_fg = (expr[i] == kAutoOpenParen || expr[i] == kAutoCloseParen) ? kGray : fg;
+        draw_text_scaled(display, cx, baseline - font_ascent(small), text, small ? 1 : kTextScale, text_fg, bg);
         cx += font_w(small);
         ++i;
     }
@@ -1853,6 +2739,14 @@ void emit_anchors_range(LayoutContext& layout, int x, int baseline, const char* 
             const ExprBox box = inverse_trig_prefix_box(small);
             cx += box.w;
             i = inverse_source_end;
+            add_anchor(&layout, i, cx, baseline, font_h(small), region);
+            continue;
+        }
+        int atomic_source_end = 0;
+        if (atomic_text_label_at(expr, i, end, atomic_source_end) != nullptr) {
+            add_anchor(&layout, i, cx, baseline, font_h(small), region);
+            cx += 3 * font_w(small);
+            i = atomic_source_end;
             add_anchor(&layout, i, cx, baseline, font_h(small), region);
             continue;
         }
@@ -2085,6 +2979,50 @@ void draw_input_line(Display& display, const char* prompt, const char* expr, int
     (void)prompt;
 }
 
+int y_row_height(int row) {
+    if (row < 0 || row >= kMaxYEquations) {
+        return 20;
+    }
+    const ExprBox expr_box = measure_expression_range(g.y_expr[row], 0, g.y_len[row]);
+    int h = expr_box.h + 8;
+    if (h < 20) {
+        h = 20;
+    }
+    return h;
+}
+
+void ensure_y_selection_visible() {
+    if (g.y_selection < 0) {
+        g.y_selection = 0;
+    }
+    if (g.y_selection >= kMaxYEquations) {
+        g.y_selection = kMaxYEquations - 1;
+    }
+    if (g.y_first_row > g.y_selection) {
+        g.y_first_row = g.y_selection;
+    }
+    if (g.y_first_row < 0) {
+        g.y_first_row = 0;
+    }
+    const int available_h = kLcdHeight - 22 - 24;
+    while (g.y_first_row < g.y_selection) {
+        int y = 0;
+        bool visible = false;
+        for (int row = g.y_first_row; row <= g.y_selection; ++row) {
+            const int h = y_row_height(row);
+            if (row == g.y_selection) {
+                visible = y + h <= available_h;
+                break;
+            }
+            y += h;
+        }
+        if (visible) {
+            break;
+        }
+        ++g.y_first_row;
+    }
+}
+
 int history_row_height(const HistoryEntry& entry) {
     const ExprBox expr_box = measure_expression_range(entry.expression, 0, static_cast<int>(std::strlen(entry.expression)));
     const ExprBox ans_box = measure_expression_range(entry.result, 0, static_cast<int>(std::strlen(entry.result)));
@@ -2133,15 +3071,1019 @@ void render_home(Display& display) {
     draw_input_line(display, ">", g.home_expr, g.home_cursor, g.home_expr_scroll_x, input_y, input_h);
 }
 
+bool graph_to_plot_point(const GraphWindow& window, CalcReal x, CalcReal y, int& sx, int& sy) {
+    const CalcReal w = window.xmax - window.xmin;
+    const CalcReal h = window.ymax - window.ymin;
+    if (w == real(0.0) || h == real(0.0) || !std::isfinite(x) || !std::isfinite(y)) {
+        return false;
+    }
+    constexpr int plot_h = kPlotBottom - kPlotTop;
+    const CalcReal px = (x - window.xmin) * static_cast<CalcReal>(kLcdWidth - 1) / w;
+    const CalcReal py = static_cast<CalcReal>(kPlotTop) +
+                        (window.ymax - y) * static_cast<CalcReal>(plot_h) / h;
+    if (px < real(-32768.0) || px > real(32767.0) || py < real(-32768.0) || py > real(32767.0)) {
+        return false;
+    }
+    sx = static_cast<int>(std::lround(px));
+    sy = static_cast<int>(std::lround(py));
+    return true;
+}
+
+int clip_code(int x, int y) {
+    int code = 0;
+    if (x < 0) {
+        code |= 1;
+    } else if (x >= kLcdWidth) {
+        code |= 2;
+    }
+    if (y < kPlotTop) {
+        code |= 4;
+    } else if (y > kPlotBottom) {
+        code |= 8;
+    }
+    return code;
+}
+
+bool clip_line_to_plot(int& x0, int& y0, int& x1, int& y1) {
+    int c0 = clip_code(x0, y0);
+    int c1 = clip_code(x1, y1);
+    while (true) {
+        if ((c0 | c1) == 0) {
+            return true;
+        }
+        if ((c0 & c1) != 0) {
+            return false;
+        }
+        const int out = c0 != 0 ? c0 : c1;
+        int x = 0;
+        int y = 0;
+        if ((out & 4) != 0) {
+            if (y1 == y0) {
+                return false;
+            }
+            x = x0 + (x1 - x0) * (kPlotTop - y0) / (y1 - y0);
+            y = kPlotTop;
+        } else if ((out & 8) != 0) {
+            if (y1 == y0) {
+                return false;
+            }
+            x = x0 + (x1 - x0) * (kPlotBottom - y0) / (y1 - y0);
+            y = kPlotBottom;
+        } else if ((out & 2) != 0) {
+            if (x1 == x0) {
+                return false;
+            }
+            y = y0 + (y1 - y0) * (kLcdWidth - 1 - x0) / (x1 - x0);
+            x = kLcdWidth - 1;
+        } else {
+            if (x1 == x0) {
+                return false;
+            }
+            y = y0 + (y1 - y0) * (0 - x0) / (x1 - x0);
+            x = 0;
+        }
+        if (out == c0) {
+            x0 = x;
+            y0 = y;
+            c0 = clip_code(x0, y0);
+        } else {
+            x1 = x;
+            y1 = y;
+            c1 = clip_code(x1, y1);
+        }
+    }
+}
+
+void draw_clipped_plot_line(Display& display, int x0, int y0, int x1, int y1, Color color) {
+    if (clip_line_to_plot(x0, y0, x1, y1)) {
+        draw_line(display, x0, y0, x1, y1, color);
+    }
+}
+
+bool evaluate_y_at(int eq, CalcReal x, CalcReal& y) {
+    if (eq < 0 || eq >= kMaxYEquations || g.y_len[eq] == 0) {
+        return false;
+    }
+    EvalResult result = evaluate_expression_with_x_readonly(g.y_expr[eq], g.eval, x);
+    if (!result.ok || !near_zero(result.imag) || !std::isfinite(result.value)) {
+        return false;
+    }
+    y = result.value;
+    return true;
+}
+
+bool should_connect_graph_points(int eq, CalcReal x0, CalcReal y0, CalcReal x1, CalcReal y1) {
+    const CalcReal mid_x = (x0 + x1) * real(0.5);
+    CalcReal mid_y = real(0.0);
+    if (!evaluate_y_at(eq, mid_x, mid_y)) {
+        return false;
+    }
+    const bool crosses_entire_window = (y0 < g.window.ymin && y1 > g.window.ymax) ||
+                                       (y1 < g.window.ymin && y0 > g.window.ymax);
+    if (crosses_entire_window && (mid_y < g.window.ymin || mid_y > g.window.ymax)) {
+        return false;
+    }
+    return true;
+}
+
+struct TracePoi {
+    char label[32];
+    CalcReal x;
+    CalcReal y;
+};
+
+CalcReal trace_step() {
+    CalcReal step = (g.window.xmax - g.window.xmin) / real(200.0);
+    if (!std::isfinite(step) || step <= real(0.0)) {
+        step = real(0.1);
+    }
+    return step;
+}
+
+CalcReal clamp_trace_x(CalcReal x) {
+    if (x < g.window.xmin) {
+        return g.window.xmin;
+    }
+    if (x > g.window.xmax) {
+        return g.window.xmax;
+    }
+    return x;
+}
+
+bool refine_intersection(int a, int b, CalcReal left, CalcReal right, CalcReal& out_x, CalcReal& out_y) {
+    CalcReal fa_left = real(0.0);
+    CalcReal fb_left = real(0.0);
+    CalcReal fa_right = real(0.0);
+    CalcReal fb_right = real(0.0);
+    if (!evaluate_y_at(a, left, fa_left) || !evaluate_y_at(b, left, fb_left) ||
+        !evaluate_y_at(a, right, fa_right) || !evaluate_y_at(b, right, fb_right)) {
+        return false;
+    }
+    CalcReal d_left = fa_left - fb_left;
+    CalcReal d_right = fa_right - fb_right;
+    if (d_left == real(0.0)) {
+        out_x = left;
+        out_y = fa_left;
+        return true;
+    }
+    if (d_right == real(0.0)) {
+        out_x = right;
+        out_y = fa_right;
+        return true;
+    }
+    if ((d_left < real(0.0) && d_right < real(0.0)) || (d_left > real(0.0) && d_right > real(0.0))) {
+        return false;
+    }
+    for (int i = 0; i < 18; ++i) {
+        const CalcReal mid = (left + right) * real(0.5);
+        CalcReal fa_mid = real(0.0);
+        CalcReal fb_mid = real(0.0);
+        if (!evaluate_y_at(a, mid, fa_mid) || !evaluate_y_at(b, mid, fb_mid)) {
+            break;
+        }
+        const CalcReal d_mid = fa_mid - fb_mid;
+        if (d_mid == real(0.0)) {
+            left = mid;
+            right = mid;
+            fa_left = fa_mid;
+            break;
+        }
+        if ((d_left < real(0.0) && d_mid > real(0.0)) || (d_left > real(0.0) && d_mid < real(0.0))) {
+            right = mid;
+            d_right = d_mid;
+        } else {
+            left = mid;
+            d_left = d_mid;
+            fa_left = fa_mid;
+        }
+    }
+    out_x = (left + right) * real(0.5);
+    return evaluate_y_at(a, out_x, out_y);
+}
+
+bool refine_extremum(int eq, bool maximum, CalcReal left, CalcReal right, CalcReal& out_x, CalcReal& out_y) {
+    for (int i = 0; i < 18; ++i) {
+        const CalcReal span = right - left;
+        const CalcReal x1 = left + span / real(3.0);
+        const CalcReal x2 = right - span / real(3.0);
+        CalcReal y1 = real(0.0);
+        CalcReal y2 = real(0.0);
+        if (!evaluate_y_at(eq, x1, y1) || !evaluate_y_at(eq, x2, y2)) {
+            break;
+        }
+        if (maximum ? (y1 < y2) : (y1 > y2)) {
+            left = x1;
+        } else {
+            right = x2;
+        }
+    }
+    out_x = (left + right) * real(0.5);
+    return evaluate_y_at(eq, out_x, out_y);
+}
+
+bool x_inside_interval(CalcReal x, CalcReal a, CalcReal b) {
+    const CalcReal step = trace_step();
+    const CalcReal low = a < b ? a : b;
+    const CalcReal high = a < b ? b : a;
+    const CalcReal epsilon = step * real(0.00001);
+    return x > low + epsilon && x < high - epsilon;
+}
+
+bool better_poi_candidate(const TracePoi& candidate, const TracePoi& best, bool have_best, CalcReal source_x, int direction) {
+    if (!have_best) {
+        return true;
+    }
+    const CalcReal candidate_distance = std::fabs(candidate.x - source_x);
+    const CalcReal best_distance = std::fabs(best.x - source_x);
+    const CalcReal epsilon = trace_step() * real(0.00001);
+    if (candidate_distance + epsilon < best_distance) {
+        return true;
+    }
+    if (std::fabs(candidate_distance - best_distance) <= epsilon) {
+        return direction > 0 ? candidate.x < best.x : candidate.x > best.x;
+    }
+    return false;
+}
+
+bool find_intersection_poi_between(int other_eq, CalcReal from_x, CalcReal to_x, TracePoi& poi) {
+    const CalcReal left = from_x < to_x ? from_x : to_x;
+    const CalcReal right = from_x < to_x ? to_x : from_x;
+    CalcReal selected_left = real(0.0);
+    CalcReal selected_right = real(0.0);
+    CalcReal other_left = real(0.0);
+    CalcReal other_right = real(0.0);
+    if (!evaluate_y_at(g.trace_eq, left, selected_left) || !evaluate_y_at(g.trace_eq, right, selected_right) ||
+        !evaluate_y_at(other_eq, left, other_left) || !evaluate_y_at(other_eq, right, other_right)) {
+        return false;
+    }
+    const CalcReal d_left = selected_left - other_left;
+    const CalcReal d_right = selected_right - other_right;
+    CalcReal poi_x = left;
+    CalcReal poi_y = selected_left;
+    if ((d_left < real(0.0) && d_right < real(0.0)) || (d_left > real(0.0) && d_right > real(0.0))) {
+        return false;
+    }
+    if (!refine_intersection(g.trace_eq, other_eq, left, right, poi_x, poi_y)) {
+        return false;
+    }
+    if (!x_inside_interval(poi_x, from_x, to_x)) {
+        return false;
+    }
+    std::snprintf(poi.label, sizeof(poi.label), "Y%d~Y%d", g.trace_eq + 1, other_eq + 1);
+    poi.x = poi_x;
+    poi.y = poi_y;
+    return true;
+}
+
+bool find_x_intercept_poi_between(CalcReal from_x, CalcReal to_x, TracePoi& poi) {
+    const CalcReal left = from_x < to_x ? from_x : to_x;
+    const CalcReal right = from_x < to_x ? to_x : from_x;
+    CalcReal y_left = real(0.0);
+    CalcReal y_right = real(0.0);
+    if (!evaluate_y_at(g.trace_eq, left, y_left) || !evaluate_y_at(g.trace_eq, right, y_right)) {
+        return false;
+    }
+    if ((y_left < real(0.0) && y_right < real(0.0)) || (y_left > real(0.0) && y_right > real(0.0))) {
+        return false;
+    }
+    CalcReal lo = left;
+    CalcReal hi = right;
+    CalcReal y_lo = y_left;
+    for (int i = 0; i < 18; ++i) {
+        const CalcReal mid = (lo + hi) * real(0.5);
+        CalcReal y_mid = real(0.0);
+        if (!evaluate_y_at(g.trace_eq, mid, y_mid)) {
+            break;
+        }
+        if (y_mid == real(0.0)) {
+            lo = mid;
+            hi = mid;
+            y_lo = y_mid;
+            break;
+        }
+        if ((y_lo < real(0.0) && y_mid > real(0.0)) || (y_lo > real(0.0) && y_mid < real(0.0))) {
+            hi = mid;
+        } else {
+            lo = mid;
+            y_lo = y_mid;
+        }
+    }
+    const CalcReal poi_x = (lo + hi) * real(0.5);
+    if (!x_inside_interval(poi_x, from_x, to_x)) {
+        return false;
+    }
+    CalcReal poi_y = real(0.0);
+    if (!evaluate_y_at(g.trace_eq, poi_x, poi_y)) {
+        return false;
+    }
+    std::snprintf(poi.label, sizeof(poi.label), "Y%d X-INT", g.trace_eq + 1);
+    poi.x = poi_x;
+    poi.y = poi_y;
+    return true;
+}
+
+bool find_y_intercept_poi_between(CalcReal from_x, CalcReal to_x, TracePoi& poi) {
+    if (!x_inside_interval(real(0.0), from_x, to_x)) {
+        return false;
+    }
+    CalcReal poi_y = real(0.0);
+    if (!evaluate_y_at(g.trace_eq, real(0.0), poi_y)) {
+        return false;
+    }
+    std::snprintf(poi.label, sizeof(poi.label), "Y%d Y-INT", g.trace_eq + 1);
+    poi.x = real(0.0);
+    poi.y = poi_y;
+    return true;
+}
+
+void clear_trace_poi_labels() {
+    g.trace_poi_active = false;
+    g.trace_poi_special = false;
+    g.trace_poi_count = 0;
+    for (int i = 0; i < kMaxTracePoiLabels; ++i) {
+        g.trace_poi_labels[i][0] = '\0';
+    }
+}
+
+void add_trace_poi_label(const char* label) {
+    if (label == nullptr || label[0] == '\0') {
+        return;
+    }
+    for (int i = 0; i < g.trace_poi_count; ++i) {
+        if (std::strcmp(g.trace_poi_labels[i], label) == 0) {
+            return;
+        }
+    }
+    if (g.trace_poi_count >= kMaxTracePoiLabels) {
+        return;
+    }
+    copy_string(g.trace_poi_labels[g.trace_poi_count], sizeof(g.trace_poi_labels[g.trace_poi_count]), label);
+    ++g.trace_poi_count;
+    g.trace_poi_active = true;
+}
+
+bool trace_current_intercept_poi(TracePoi& poi) {
+    if (!g.trace_active || g.trace_eq < 0) {
+        return false;
+    }
+    const CalcReal x_epsilon = trace_step() * real(0.00001);
+    const CalcReal y_epsilon = std::fabs(g.window.ymax - g.window.ymin) * real(0.000001);
+    CalcReal y = real(0.0);
+    if (!evaluate_y_at(g.trace_eq, g.trace_x, y)) {
+        return false;
+    }
+    const bool at_y_axis = std::fabs(g.trace_x) <= x_epsilon;
+    const bool at_x_axis = std::fabs(y) <= y_epsilon;
+    if (at_x_axis) {
+        std::snprintf(poi.label, sizeof(poi.label), "Y%d X-INT", g.trace_eq + 1);
+    } else if (at_y_axis) {
+        std::snprintf(poi.label, sizeof(poi.label), "Y%d Y-INT", g.trace_eq + 1);
+    } else {
+        return false;
+    }
+    poi.x = g.trace_x;
+    poi.y = y;
+    return true;
+}
+
+void update_trace_current_poi_labels(bool special_stop) {
+    const bool preserve_special = special_stop;
+    clear_trace_poi_labels();
+    g.trace_poi_special = preserve_special;
+    if (!g.trace_active || g.trace_eq < 0) {
+        return;
+    }
+    const CalcReal x_epsilon = trace_step() * real(0.0005);
+    const CalcReal y_epsilon = std::fabs(g.window.ymax - g.window.ymin) * real(0.000001);
+    CalcReal y = real(0.0);
+    if (!evaluate_y_at(g.trace_eq, g.trace_x, y)) {
+        return;
+    }
+
+    const CalcReal left_x = clamp_trace_x(g.trace_x - trace_step());
+    const CalcReal right_x = clamp_trace_x(g.trace_x + trace_step());
+    if (left_x != right_x && g.trace_x > g.window.xmin && g.trace_x < g.window.xmax) {
+        for (int mode = 0; mode < 2; ++mode) {
+            const bool local_max = mode == 1;
+            CalcReal poi_x = g.trace_x;
+            CalcReal poi_y = y;
+            if (refine_extremum(g.trace_eq, local_max, left_x, right_x, poi_x, poi_y) &&
+                std::fabs(poi_x - g.trace_x) <= x_epsilon) {
+                CalcReal y_left = real(0.0);
+                CalcReal y_right = real(0.0);
+                if (evaluate_y_at(g.trace_eq, left_x, y_left) && evaluate_y_at(g.trace_eq, right_x, y_right)) {
+                    if ((local_max && poi_y >= y_left && poi_y >= y_right && (poi_y > y_left || poi_y > y_right)) ||
+                        (!local_max && poi_y <= y_left && poi_y <= y_right && (poi_y < y_left || poi_y < y_right))) {
+                        char label[32]{};
+                        std::snprintf(label, sizeof(label), "Y%d LOCAL %s", g.trace_eq + 1, local_max ? "MAX" : "MIN");
+                        add_trace_poi_label(label);
+                    }
+                }
+            }
+        }
+    }
+
+    for (int eq = 0; eq < kMaxYEquations; ++eq) {
+        if (eq == g.trace_eq || g.y_len[eq] == 0) {
+            continue;
+        }
+        CalcReal other_y = real(0.0);
+        if (evaluate_y_at(eq, g.trace_x, other_y) && std::fabs(other_y - y) <= y_epsilon) {
+            char label[32]{};
+            std::snprintf(label, sizeof(label), "Y%d~Y%d", g.trace_eq + 1, eq + 1);
+            add_trace_poi_label(label);
+        }
+    }
+
+    if (std::fabs(y) <= y_epsilon) {
+        char label[32]{};
+        std::snprintf(label, sizeof(label), "Y%d X-INT", g.trace_eq + 1);
+        add_trace_poi_label(label);
+    }
+    if (std::fabs(g.trace_x) <= x_epsilon) {
+        char label[32]{};
+        std::snprintf(label, sizeof(label), "Y%d Y-INT", g.trace_eq + 1);
+        add_trace_poi_label(label);
+    }
+}
+
+bool find_extremum_poi_between(CalcReal from_x, CalcReal to_x, TracePoi& poi) {
+    const CalcReal left = from_x < to_x ? from_x : to_x;
+    const CalcReal right = from_x < to_x ? to_x : from_x;
+    if (left == right) {
+        return false;
+    }
+    CalcReal y_left = real(0.0);
+    CalcReal y_right = real(0.0);
+    if (!evaluate_y_at(g.trace_eq, left, y_left) || !evaluate_y_at(g.trace_eq, right, y_right)) {
+        return false;
+    }
+    bool have_best = false;
+    TracePoi best{};
+    for (int mode = 0; mode < 2; ++mode) {
+        const bool local_max = mode == 1;
+        CalcReal poi_x = (left + right) * real(0.5);
+        CalcReal poi_y = real(0.0);
+        if (!refine_extremum(g.trace_eq, local_max, left, right, poi_x, poi_y) ||
+            !x_inside_interval(poi_x, from_x, to_x)) {
+            continue;
+        }
+        if (local_max) {
+            if (poi_y < y_left || poi_y < y_right || (poi_y == y_left && poi_y == y_right)) {
+                continue;
+            }
+        } else if (poi_y > y_left || poi_y > y_right || (poi_y == y_left && poi_y == y_right)) {
+            continue;
+        }
+        TracePoi candidate{};
+        std::snprintf(candidate.label, sizeof(candidate.label), "Y%d LOCAL %s", g.trace_eq + 1, local_max ? "MAX" : "MIN");
+        candidate.x = poi_x;
+        candidate.y = poi_y;
+        if (better_poi_candidate(candidate, best, have_best, from_x, from_x < to_x ? 1 : -1)) {
+            best = candidate;
+            have_best = true;
+        }
+    }
+    if (!have_best) {
+        return false;
+    }
+    poi = best;
+    return true;
+}
+
+bool find_trace_poi_between(CalcReal from_x, CalcReal to_x, int direction, TracePoi& poi) {
+    if (!g.trace_active || g.trace_eq < 0 || from_x == to_x) {
+        return false;
+    }
+    bool have_best = false;
+    TracePoi best{};
+    for (int eq = 0; eq < kMaxYEquations; ++eq) {
+        if (eq == g.trace_eq || g.y_len[eq] == 0) {
+            continue;
+        }
+        TracePoi candidate{};
+        if (find_intersection_poi_between(eq, from_x, to_x, candidate) &&
+            better_poi_candidate(candidate, best, have_best, from_x, direction)) {
+            best = candidate;
+            have_best = true;
+        }
+    }
+    TracePoi extremum{};
+    if (find_extremum_poi_between(from_x, to_x, extremum) &&
+        better_poi_candidate(extremum, best, have_best, from_x, direction)) {
+        best = extremum;
+        have_best = true;
+    }
+    TracePoi x_intercept{};
+    if (find_x_intercept_poi_between(from_x, to_x, x_intercept) &&
+        better_poi_candidate(x_intercept, best, have_best, from_x, direction)) {
+        best = x_intercept;
+        have_best = true;
+    }
+    TracePoi y_intercept{};
+    if (find_y_intercept_poi_between(from_x, to_x, y_intercept) &&
+        better_poi_candidate(y_intercept, best, have_best, from_x, direction)) {
+        best = y_intercept;
+        have_best = true;
+    }
+    if (!have_best) {
+        return false;
+    }
+    poi = best;
+    return true;
+}
+
+int first_trace_equation(CalcReal x) {
+    for (int eq = 0; eq < kMaxYEquations; ++eq) {
+        CalcReal y = real(0.0);
+        if (evaluate_y_at(eq, x, y)) {
+            return eq;
+        }
+    }
+    return -1;
+}
+
+constexpr int kTraceGridSteps = 200;
+
+int clamp_trace_grid_index(int index) {
+    if (index < 0) {
+        return 0;
+    }
+    if (index > kTraceGridSteps) {
+        return kTraceGridSteps;
+    }
+    return index;
+}
+
+CalcReal trace_grid_x_at(int index) {
+    const CalcReal step = trace_step();
+    return clamp_trace_x(g.window.xmin + static_cast<CalcReal>(clamp_trace_grid_index(index)) * step);
+}
+
+int trace_grid_index_for_x(CalcReal x) {
+    const CalcReal step = trace_step();
+    const CalcReal relative = (x - g.window.xmin) / step;
+    return clamp_trace_grid_index(static_cast<int>(std::round(static_cast<double>(relative))));
+}
+
+int first_valid_trace_grid_index(int preferred_index, int& eq_out) {
+    for (int radius = 0; radius <= kTraceGridSteps; ++radius) {
+        for (int side = 0; side < 2; ++side) {
+            if (radius == 0 && side == 1) {
+                continue;
+            }
+            const int index = side == 0 ? preferred_index + radius : preferred_index - radius;
+            if (index < 0 || index > kTraceGridSteps) {
+                continue;
+            }
+            const CalcReal x = trace_grid_x_at(index);
+            const int eq = first_trace_equation(x);
+            if (eq >= 0) {
+                eq_out = eq;
+                return index;
+            }
+        }
+    }
+    eq_out = -1;
+    return preferred_index;
+}
+
+bool trace_y_visible(int eq, CalcReal x) {
+    CalcReal y = real(0.0);
+    return evaluate_y_at(eq, x, y) && y >= g.window.ymin && y <= g.window.ymax;
+}
+
+void ensure_trace_cursor_visible() {
+    if (!g.trace_active || g.trace_eq < 0) {
+        return;
+    }
+    if (g.trace_x < g.window.xmin) {
+        g.trace_grid_index = 0;
+        g.trace_x = trace_grid_x_at(g.trace_grid_index);
+        g.trace_poi_special = false;
+    } else if (g.trace_x > g.window.xmax) {
+        g.trace_grid_index = kTraceGridSteps;
+        g.trace_x = trace_grid_x_at(g.trace_grid_index);
+        g.trace_poi_special = false;
+    } else if (!g.trace_poi_special) {
+        g.trace_grid_index = trace_grid_index_for_x(g.trace_x);
+    }
+
+    if (trace_y_visible(g.trace_eq, g.trace_x)) {
+        update_trace_current_poi_labels(g.trace_poi_special);
+        return;
+    }
+
+    const int preferred = clamp_trace_grid_index(g.trace_grid_index);
+    for (int radius = 0; radius <= kTraceGridSteps; ++radius) {
+        for (int side = 0; side < 2; ++side) {
+            if (radius == 0 && side == 1) {
+                continue;
+            }
+            const int index = side == 0 ? preferred + radius : preferred - radius;
+            if (index < 0 || index > kTraceGridSteps) {
+                continue;
+            }
+            const CalcReal x = trace_grid_x_at(index);
+            if (trace_y_visible(g.trace_eq, x)) {
+                g.trace_grid_index = index;
+                g.trace_x = x;
+                g.trace_poi_special = false;
+                update_trace_current_poi_labels(false);
+                return;
+            }
+        }
+    }
+
+    for (int index = 0; index <= kTraceGridSteps; ++index) {
+        const CalcReal x = trace_grid_x_at(index);
+        for (int eq = 0; eq < kMaxYEquations; ++eq) {
+            if (trace_y_visible(eq, x)) {
+                g.trace_eq = eq;
+                g.trace_grid_index = index;
+                g.trace_x = x;
+                g.trace_poi_special = false;
+                update_trace_current_poi_labels(false);
+                return;
+            }
+        }
+    }
+}
+
+void clear_trace_entry() {
+    g.trace_entry[0] = '\0';
+    g.trace_entry_len = 0;
+    g.trace_entry_cursor = 0;
+}
+
+bool insert_trace_entry_key(Key key) {
+    return insert_window_value_key(key, g.trace_entry, g.trace_entry_len, g.trace_entry_cursor);
+}
+
+bool parse_trace_entry(CalcReal& value) {
+    if (g.trace_entry_len == 0) {
+        return false;
+    }
+    EvalContext copy = g.eval;
+    EvalResult result = evaluate_expression(g.trace_entry, copy);
+    if (!result.ok || !near_zero(result.imag) || !std::isfinite(result.value)) {
+        return false;
+    }
+    value = result.value;
+    return true;
+}
+
+void expand_axis_for_margin(CalcReal value, CalcReal& min_value, CalcReal& max_value) {
+    CalcReal range = max_value - min_value;
+    if (!std::isfinite(range) || range <= real(0.0)) {
+        range = real(1.0);
+        min_value = value - range * real(0.5);
+        max_value = value + range * real(0.5);
+    }
+    constexpr CalcReal margin = static_cast<CalcReal>(0.2);
+    const CalcReal low_margin = min_value + range * margin;
+    const CalcReal high_margin = max_value - range * margin;
+    if (value < low_margin) {
+        const CalcReal new_range = (max_value - value) / (real(1.0) - margin);
+        min_value = max_value - new_range;
+    } else if (value > high_margin) {
+        const CalcReal new_range = (value - min_value) / (real(1.0) - margin);
+        max_value = min_value + new_range;
+    }
+}
+
+void jump_trace_to_x(CalcReal x) {
+    CalcReal y = real(0.0);
+    if (!evaluate_y_at(g.trace_eq, x, y)) {
+        const int eq = first_trace_equation(x);
+        if (eq < 0 || !evaluate_y_at(eq, x, y)) {
+            return;
+        }
+        g.trace_eq = eq;
+    }
+    const bool offscreen = x < g.window.xmin || x > g.window.xmax || y < g.window.ymin || y > g.window.ymax;
+    if (offscreen) {
+        expand_axis_for_margin(x, g.window.xmin, g.window.xmax);
+        expand_axis_for_margin(y, g.window.ymin, g.window.ymax);
+        sync_window_edit_from_values();
+    }
+    g.trace_x = x;
+    g.trace_grid_index = trace_grid_index_for_x(x);
+    update_trace_current_poi_labels(false);
+    ensure_trace_cursor_visible();
+    clear_trace_entry();
+}
+
+void start_trace() {
+    g.trace_x = (g.window.xmin + g.window.xmax) * real(0.5);
+    const int preferred_index = trace_grid_index_for_x(g.trace_x);
+    g.trace_grid_index = first_valid_trace_grid_index(preferred_index, g.trace_eq);
+    g.trace_x = trace_grid_x_at(g.trace_grid_index);
+    g.trace_active = g.trace_eq >= 0;
+    update_trace_current_poi_labels(false);
+    clear_trace_entry();
+}
+
+void move_trace_horizontal(int direction) {
+    clear_trace_entry();
+    int interval_index = g.trace_grid_index;
+    int target_index = g.trace_grid_index;
+    if (g.trace_poi_special) {
+        target_index = direction > 0 ? g.trace_grid_index + 1 : g.trace_grid_index;
+    } else {
+        target_index = g.trace_grid_index + direction;
+        interval_index = direction > 0 ? g.trace_grid_index : g.trace_grid_index - 1;
+    }
+    target_index = clamp_trace_grid_index(target_index);
+    interval_index = clamp_trace_grid_index(interval_index);
+    const CalcReal next_grid = trace_grid_x_at(target_index);
+    TracePoi poi{};
+    CalcReal scan_from = g.trace_x;
+    if (g.trace_poi_special) {
+        const CalcReal skip = trace_step() * real(0.001);
+        scan_from = clamp_trace_x(g.trace_x + skip * static_cast<CalcReal>(direction));
+        if ((direction > 0 && scan_from > next_grid) || (direction < 0 && scan_from < next_grid)) {
+            scan_from = next_grid;
+        }
+    }
+    if (next_grid != g.trace_x && scan_from != next_grid && find_trace_poi_between(scan_from, next_grid, direction, poi)) {
+        g.trace_x = poi.x;
+        g.trace_grid_index = interval_index;
+        update_trace_current_poi_labels(true);
+        if (g.trace_poi_count == 0) {
+            add_trace_poi_label(poi.label);
+            g.trace_poi_special = true;
+        }
+    } else {
+        g.trace_x = next_grid;
+        g.trace_grid_index = target_index;
+        update_trace_current_poi_labels(false);
+    }
+    CalcReal y = real(0.0);
+    if (!evaluate_y_at(g.trace_eq, g.trace_x, y)) {
+        g.trace_eq = first_trace_equation(g.trace_x);
+        g.trace_active = g.trace_eq >= 0;
+        clear_trace_poi_labels();
+    }
+}
+
+void move_trace_vertical(int direction) {
+    clear_trace_entry();
+    CalcReal current_y = real(0.0);
+    if (!evaluate_y_at(g.trace_eq, g.trace_x, current_y)) {
+        g.trace_eq = first_trace_equation(g.trace_x);
+        g.trace_active = g.trace_eq >= 0;
+        return;
+    }
+    int best_eq = -1;
+    CalcReal best_delta = real(0.0);
+    for (int eq = 0; eq < kMaxYEquations; ++eq) {
+        if (eq == g.trace_eq) {
+            continue;
+        }
+        CalcReal candidate_y = real(0.0);
+        if (!evaluate_y_at(eq, g.trace_x, candidate_y)) {
+            continue;
+        }
+        const CalcReal delta = candidate_y - current_y;
+        if ((direction > 0 && delta <= real(0.0)) || (direction < 0 && delta >= real(0.0))) {
+            continue;
+        }
+        const CalcReal distance = delta < real(0.0) ? -delta : delta;
+        if (best_eq < 0 || distance < best_delta) {
+            best_eq = eq;
+            best_delta = distance;
+        }
+    }
+    if (best_eq >= 0) {
+        g.trace_eq = best_eq;
+        update_trace_current_poi_labels(false);
+    }
+}
+
+void draw_trace_cursor(Display& display) {
+    if (!g.trace_active) {
+        return;
+    }
+    CalcReal y = real(0.0);
+    if (!evaluate_y_at(g.trace_eq, g.trace_x, y)) {
+        return;
+    }
+    int sx = 0;
+    int sy = 0;
+    if (!graph_to_plot_point(g.window, g.trace_x, y, sx, sy)) {
+        return;
+    }
+    static constexpr const char* kTraceCursorOn[9] = {
+        "###...###",
+        "####.####",
+        "#########",
+        ".###.###.",
+        "..#...#..",
+        ".###.###.",
+        "#########",
+        "####.####",
+        "###...###",
+    };
+    static constexpr const char* kTraceCursorOff[9] = {
+        "###...###",
+        "#..#.#..#",
+        "#..###..#",
+        ".#.#.#.#.",
+        "..#...#..",
+        ".#.#.#.#.",
+        "#..###..#",
+        "#..#.#..#",
+        "###...###",
+    };
+    const char* const* glyph = g.cursor_on ? kTraceCursorOn : kTraceCursorOff;
+    for (int row = 0; row < 9; ++row) {
+        const int py = sy + row - 4;
+        if (py < kPlotTop || py > kPlotBottom) {
+            continue;
+        }
+        for (int col = 0; col < 9; ++col) {
+            const int px = sx + col - 4;
+            if (px < 0 || px >= kLcdWidth || glyph[row][col] != '#') {
+                continue;
+            }
+            set_pixel(display, px, py, kBlack);
+        }
+    }
+}
+
+void draw_trace_readouts(Display& display) {
+    if (!g.trace_active) {
+        return;
+    }
+    CalcReal y = real(0.0);
+    if (!evaluate_y_at(g.trace_eq, g.trace_x, y)) {
+        return;
+    }
+    char value[24]{};
+    char text[32]{};
+    if (g.trace_entry_len > 0) {
+        std::snprintf(text, sizeof(text), "X=%s", g.trace_entry);
+    } else {
+        format_table_value(g.trace_x, value, sizeof(value), 10);
+        std::snprintf(text, sizeof(text), "X=%s", value);
+    }
+    const int x_text_w = static_cast<int>(std::strlen(text)) * 8;
+    fill_rect(display, 25, kLcdHeight - 16, x_text_w + 4, 14, kWhite);
+    draw_text_scaled(display, 25, kLcdHeight - 14, text, 1, kBlack, kWhite);
+    format_table_value(y, value, sizeof(value), 10);
+    std::snprintf(text, sizeof(text), "Y=%s", value);
+    const int y_text_w = static_cast<int>(std::strlen(text)) * 8;
+    fill_rect(display, 170, kLcdHeight - 16, y_text_w + 4, 14, kWhite);
+    draw_text_scaled(display, 170, kLcdHeight - 14, text, 1, graph_color(g.trace_eq), kWhite);
+
+    for (int i = 0; i < g.trace_poi_count; ++i) {
+        const int row_y = kLcdHeight - 28 - (g.trace_poi_count - 1 - i) * 12;
+        const int poi_text_w = static_cast<int>(std::strlen(g.trace_poi_labels[i])) * 8;
+        fill_rect(display, 25, row_y - 2, poi_text_w + 4, 12, kWhite);
+        draw_text_scaled(display, 25, row_y, g.trace_poi_labels[i], 1, graph_color(g.trace_eq), kWhite);
+    }
+
+    char label[6]{};
+    std::snprintf(label, sizeof(label), "Y%d=", g.trace_eq + 1);
+    const ExprBox box = measure_expression_range(g.y_expr[g.trace_eq], 0, g.y_len[g.trace_eq]);
+    int expr_y = kTitleH + 2;
+    if (expr_y + box.h > kLcdHeight - 18) {
+        expr_y = kLcdHeight - 18 - box.h;
+    }
+    if (expr_y < kTitleH) {
+        expr_y = kTitleH;
+    }
+    constexpr int label_x = 25;
+    constexpr int expr_x = 55;
+    const int visible_expr_w = box.w > kLcdWidth - expr_x - 2 ? kLcdWidth - expr_x - 2 : box.w;
+    const int bg_w = (expr_x - label_x) + visible_expr_w + 2;
+    fill_rect(display, label_x, expr_y - 2, bg_w, box.h + 4, kWhite);
+    draw_text_scaled(display, label_x, expr_y + (box.h > 14 ? (box.h - 14) / 2 : 0), label, 1, graph_color(g.trace_eq), kWhite);
+    int expr_scroll = 0;
+    if (box.w > kLcdWidth - expr_x - 2) {
+        expr_scroll = box.w - (kLcdWidth - expr_x - 2);
+    }
+    draw_expression(display, expr_x - expr_scroll, expr_y, g.y_expr[g.trace_eq], -1, graph_color(g.trace_eq), kWhite);
+}
+
+CalcReal graph_grid_step(CalcReal min_value, CalcReal max_value) {
+    CalcReal range = max_value - min_value;
+    if (!std::isfinite(range) || range <= real(0.0)) {
+        return real(1.0);
+    }
+    CalcReal target = range / real(20.0);
+    if (target < real(1.0)) {
+        return real(1.0);
+    }
+    CalcReal base = real(1.0);
+    while (base * real(10.0) <= target) {
+        base *= real(10.0);
+    }
+    CalcReal step = base;
+    if (target > base * real(5.0)) {
+        step = base * real(10.0);
+    } else if (target > base * real(2.0)) {
+        step = base * real(5.0);
+    } else if (target > base) {
+        step = base * real(2.0);
+    }
+    if (step < real(1.0)) {
+        return real(1.0);
+    }
+    return std::floor(step + real(0.5));
+}
+
+void format_grid_label(CalcReal value, char* out, std::size_t size) {
+    if (out == nullptr || size == 0u) {
+        return;
+    }
+    std::snprintf(out, size, "%.0f", static_cast<double>(value));
+}
+
+bool grid_tick_value(CalcReal step, CalcReal min_value, CalcReal max_value, CalcReal& tick) {
+    if (step >= min_value && step <= max_value) {
+        tick = step;
+        return true;
+    }
+    if (-step >= min_value && -step <= max_value) {
+        tick = -step;
+        return true;
+    }
+    return false;
+}
+
+void draw_grid_step_labels(Display& display, CalcReal x_step, CalcReal y_step) {
+    const Color tick_color = kBlack;
+    CalcReal tick = real(0.0);
+    int sx = 0;
+    int sy = 0;
+    if (real(0.0) >= g.window.ymin && real(0.0) <= g.window.ymax &&
+        grid_tick_value(x_step, g.window.xmin, g.window.xmax, tick) &&
+        graph_to_plot_point(g.window, tick, real(0.0), sx, sy)) {
+        draw_line(display, sx, sy - 3, sx, sy + 3, tick_color);
+        char label[16]{};
+        format_grid_label(tick, label, sizeof(label));
+        int label_y = sy + 5;
+        if (label_y + 10 > kPlotBottom) {
+            label_y = sy - 13;
+        }
+        const int label_w = static_cast<int>(std::strlen(label)) * 8;
+        int label_x = sx - label_w / 2;
+        if (label_x < 0) {
+            label_x = 0;
+        } else if (label_x + label_w > kLcdWidth) {
+            label_x = kLcdWidth - label_w;
+        }
+        fill_rect(display, label_x, label_y, label_w + 2, 10, kWhite);
+        draw_text_scaled(display, label_x, label_y, label, 1, tick_color, kWhite);
+    }
+    if (real(0.0) >= g.window.xmin && real(0.0) <= g.window.xmax &&
+        grid_tick_value(y_step, g.window.ymin, g.window.ymax, tick) &&
+        graph_to_plot_point(g.window, real(0.0), tick, sx, sy)) {
+        draw_line(display, sx - 3, sy, sx + 3, sy, tick_color);
+        char label[16]{};
+        format_grid_label(tick, label, sizeof(label));
+        const int label_w = static_cast<int>(std::strlen(label)) * 8;
+        int label_x = sx - label_w - 5;
+        if (label_x < 0) {
+            label_x = sx + 5;
+        }
+        if (label_x + label_w > kLcdWidth) {
+            label_x = kLcdWidth - label_w;
+        }
+        int label_y = sy - 5;
+        if (label_y < kPlotTop) {
+            label_y = kPlotTop;
+        } else if (label_y + 10 > kPlotBottom) {
+            label_y = kPlotBottom - 10;
+        }
+        fill_rect(display, label_x, label_y, label_w + 2, 10, kWhite);
+        draw_text_scaled(display, label_x, label_y, label, 1, tick_color, kWhite);
+    }
+}
+
 void draw_axes(Display& display) {
     int sx = 0;
     int sy = 0;
     const Color grid = rgb565(210, 210, 210);
-    for (int i = -10; i <= 10; ++i) {
-        if (graph_to_screen(g.window, static_cast<CalcReal>(i), g.window.ymin, sx, sy)) {
-            draw_line(display, sx, kTitleH, sx, kLcdHeight - 1, grid);
+    const CalcReal x_step = graph_grid_step(g.window.xmin, g.window.xmax);
+    const CalcReal y_step = graph_grid_step(g.window.ymin, g.window.ymax);
+    const CalcReal first_x = std::ceil(g.window.xmin / x_step) * x_step;
+    for (CalcReal x = first_x; x <= g.window.xmax + x_step * real(0.001); x += x_step) {
+        if (std::fabs(x) < x_step * real(0.0001)) {
+            x = real(0.0);
         }
-        if (graph_to_screen(g.window, g.window.xmin, static_cast<CalcReal>(i), sx, sy)) {
+        if (graph_to_plot_point(g.window, x, g.window.ymin, sx, sy) && sx >= 0 && sx < kLcdWidth) {
+            draw_line(display, sx, kPlotTop, sx, kPlotBottom, grid);
+        }
+    }
+    const CalcReal first_y = std::ceil(g.window.ymin / y_step) * y_step;
+    for (CalcReal y = first_y; y <= g.window.ymax + y_step * real(0.001); y += y_step) {
+        if (std::fabs(y) < y_step * real(0.0001)) {
+            y = real(0.0);
+        }
+        if (graph_to_plot_point(g.window, g.window.xmin, y, sx, sy) && sy >= kPlotTop && sy <= kPlotBottom) {
             draw_line(display, 0, sy, kLcdWidth - 1, sy, grid);
         }
     }
@@ -2149,12 +4091,12 @@ void draw_axes(Display& display) {
     int ay0 = 0;
     int ax1 = 0;
     int ay1 = 0;
-    if (graph_to_screen(g.window, 0.0, g.window.ymin, ax0, ay0) &&
-        graph_to_screen(g.window, 0.0, g.window.ymax, ax1, ay1)) {
-        draw_line(display, ax0, kTitleH, ax0, kLcdHeight - 1, kBlack);
+    if (graph_to_plot_point(g.window, 0.0, g.window.ymin, ax0, ay0) &&
+        graph_to_plot_point(g.window, 0.0, g.window.ymax, ax1, ay1) && ax0 >= 0 && ax0 < kLcdWidth) {
+        draw_line(display, ax0, kPlotTop, ax0, kPlotBottom, kBlack);
     }
-    if (graph_to_screen(g.window, g.window.xmin, 0.0, ax0, ay0) &&
-        graph_to_screen(g.window, g.window.xmax, 0.0, ax1, ay1)) {
+    if (graph_to_plot_point(g.window, g.window.xmin, 0.0, ax0, ay0) &&
+        graph_to_plot_point(g.window, g.window.xmax, 0.0, ax1, ay1) && ay0 >= kPlotTop && ay0 <= kPlotBottom) {
         draw_line(display, 0, ay0, kLcdWidth - 1, ay0, kBlack);
     }
 }
@@ -2162,66 +4104,227 @@ void draw_axes(Display& display) {
 void render_graph(Display& display) {
     clear(display, kWhite);
     title(display, "GRAPH");
+    commit_window_edits();
+    ensure_trace_cursor_visible();
     draw_axes(display);
 
-    if (g.y_len == 0) {
-        draw_text_scaled(display, 8, 22, "Y1 EMPTY - PRESS Y=", kTextScale, kRed, kWhite);
+    bool have_any = false;
+    for (int eq = 0; eq < kMaxYEquations; ++eq) {
+        if (g.y_len[eq] > 0) {
+            have_any = true;
+            break;
+        }
+    }
+    if (!have_any) {
+        draw_text_scaled(display, 8, 22, "Y EMPTY - PRESS Y=", kTextScale, kRed, kWhite);
         return;
     }
 
-    bool have_prev = false;
-    int prev_x = 0;
-    int prev_y = 0;
-    for (int px = 0; px < kLcdWidth; ++px) {
-        const CalcReal x = screen_to_graph_x(g.window, px);
-        EvalResult result = evaluate_expression_with_x_readonly(g.y_expr, g.eval, x);
-        int sx = 0;
-        int sy = 0;
-        if (result.ok && near_zero(result.imag) && graph_to_screen(g.window, x, result.value, sx, sy)) {
-            if (have_prev) {
-                draw_line(display, prev_x, prev_y, sx, sy, kRed);
+    for (int eq = 0; eq < kMaxYEquations; ++eq) {
+        if (g.y_len[eq] == 0) {
+            continue;
+        }
+        bool have_prev = false;
+        int prev_x = 0;
+        int prev_y = 0;
+        CalcReal prev_graph_x = real(0.0);
+        CalcReal prev_graph_y = real(0.0);
+        const Color color = graph_color(eq);
+        for (int px = 0; px < kLcdWidth; ++px) {
+            const CalcReal x = screen_to_graph_x(g.window, px);
+            CalcReal y = real(0.0);
+            int sx = 0;
+            int sy = 0;
+            if (evaluate_y_at(eq, x, y) && graph_to_plot_point(g.window, x, y, sx, sy)) {
+                if (have_prev && should_connect_graph_points(eq, prev_graph_x, prev_graph_y, x, y)) {
+                    draw_clipped_plot_line(display, prev_x, prev_y, sx, sy, color);
+                }
+                prev_x = sx;
+                prev_y = sy;
+                prev_graph_x = x;
+                prev_graph_y = y;
+                have_prev = true;
+            } else {
+                have_prev = false;
             }
-            prev_x = sx;
-            prev_y = sy;
-            have_prev = true;
-        } else {
-            have_prev = false;
         }
     }
-    draw_expression(display, 4, 224, g.y_expr, -1, kBlue, kWhite);
+    draw_grid_step_labels(display,
+                          graph_grid_step(g.window.xmin, g.window.xmax),
+                          graph_grid_step(g.window.ymin, g.window.ymax));
+    draw_trace_readouts(display);
+    draw_trace_cursor(display);
 }
 
 void render_y(Display& display) {
     clear(display, kWhite);
     title(display, "Y=");
-    draw_text_scaled(display, 4, 24, "Y1=", kTextScale, kBlack, kWhite);
-    ensure_cursor_visible(g.y_expr, g.y_len, g.y_cursor, kLcdWidth - 38, g.y_expr_scroll_x);
-    draw_expression(display, 34 - g.y_expr_scroll_x, 24, g.y_expr, g.y_cursor, kBlack, kWhite);
-    fill_rect(display, 0, 20, 34, 28, kWhite);
-    draw_text_scaled(display, 4, 24, "Y1=", kTextScale, kBlack, kWhite);
+    constexpr int expr_x = 66;
+    ensure_y_selection_visible();
+    int y = 22;
+    for (int i = g.y_first_row; i < kMaxYEquations; ++i) {
+        const int row_h = y_row_height(i);
+        if (y + row_h > 210) {
+            break;
+        }
+        const Color bg = g.y_selection == i ? kLightGray : kWhite;
+        if (g.y_selection == i) {
+            fill_rect(display, 0, y - 2, kLcdWidth, row_h, kLightGray);
+        }
+        const int label_y = y + (row_h > 18 ? (row_h - 18) / 2 : 0);
+        fill_rect(display, 5, label_y + 3, 10, 10, graph_color(i));
+        char label[6]{};
+        std::snprintf(label, sizeof(label), "Y%d=", i + 1);
+        draw_text_scaled(display, 20, label_y + 2, label, 1, kBlack, bg);
+        if (g.y_selection == i) {
+            ensure_cursor_visible(g.y_expr[i], g.y_len[i], g.y_cursor[i], kLcdWidth - expr_x - 4, g.y_expr_scroll_x[i]);
+        }
+        const ExprBox expr_box = measure_expression_range(g.y_expr[i], 0, g.y_len[i]);
+        int expr_y = y + (row_h - expr_box.h) / 2;
+        if (expr_y < y) {
+            expr_y = y;
+        }
+        draw_expression(display,
+                        expr_x - g.y_expr_scroll_x[i],
+                        expr_y,
+                        g.y_expr[i],
+                        g.y_selection == i ? g.y_cursor[i] : -1,
+                        kBlack,
+                        bg);
+        fill_rect(display, 0, y - 2, expr_x, row_h, bg);
+        fill_rect(display, 5, label_y + 3, 10, 10, graph_color(i));
+        draw_text_scaled(display, 20, label_y + 2, label, 1, kBlack, bg);
+        y += row_h;
+    }
     draw_text_scaled(display, 4, 210, "ENTER OR GRAPH TO PLOT", kTextScale, kBlue, kWhite);
 }
 
 void render_window(Display& display) {
     clear(display, kWhite);
     title(display, "WINDOW");
-    const char* labels[4] = {"XMIN", "XMAX", "YMIN", "YMAX"};
-    const CalcReal values[4] = {g.window.xmin, g.window.xmax, g.window.ymin, g.window.ymax};
-    for (int i = 0; i < 4; ++i) {
-        const int y = 24 + i * 20;
+    const char* labels[kWindowNumericRows] = {"XMIN", "XMAX", "YMIN", "YMAX", "TBLSTRT", "TBLSTEP"};
+    for (int i = 0; i < kWindowNumericRows; ++i) {
+        const int y = 22 + i * 18;
+        const Color bg = g.window_selection == i ? kLightGray : kWhite;
         if (g.window_selection == i) {
             fill_rect(display, 2, y - 2, kLcdWidth - 4, 15, kLightGray);
         }
-        char line[48]{};
-        char value[24]{};
-        format_value(values[i], value, sizeof(value));
+        char label[10]{};
         std::size_t pos = 0;
-        append_string(line, sizeof(line), pos, labels[i]);
-        append_char(line, sizeof(line), pos, '=');
-        append_string(line, sizeof(line), pos, value);
-        draw_text_scaled(display, 8, y, line, kTextScale, kBlack, g.window_selection == i ? kLightGray : kWhite);
+        append_string(label, sizeof(label), pos, labels[i]);
+        append_char(label, sizeof(label), pos, '=');
+        draw_text_scaled(display, 8, y, label, kTextScale, kBlack, bg);
+        draw_expression(display,
+                        104,
+                        y,
+                        g.window_edit[i],
+                        g.window_selection == i ? g.window_edit_cursor[i] : -1,
+                        kBlack,
+                        bg);
     }
-    draw_text_scaled(display, 4, 210, "ARROWS SELECT  +/- EDIT", kTextScale, kBlue, kWhite);
+    const int mode_y = 22 + kWindowNumericRows * 18;
+    draw_text_scaled(display, 8, mode_y, "TBLMODE=", kTextScale, kBlack, kWhite);
+    const bool auto_mode = g.table_auto;
+    const bool mode_cursor = g.window_selection == kWindowNumericRows;
+    const Color auto_bg = mode_cursor && auto_mode ? kBlue : (auto_mode ? kLightGray : kWhite);
+    const Color manual_bg = mode_cursor && !auto_mode ? kBlue : (!auto_mode ? kLightGray : kWhite);
+    draw_text_scaled(display, 104, mode_y, "AUTO", kTextScale, auto_bg == kBlue ? kWhite : kBlack, auto_bg);
+    draw_text_scaled(display, 170, mode_y, "MANUAL", kTextScale, manual_bg == kBlue ? kWhite : kBlack, manual_bg);
+    draw_text_scaled(display, 4, 210, "UP/DOWN SELECT  TYPE VALUE", kTextScale, kBlue, kWhite);
+}
+
+void table_header_label(int col, char* out, std::size_t size) {
+    if (col == 0) {
+        copy_string(out, size, "X");
+    } else {
+        std::snprintf(out, size, "Y%d", col);
+    }
+}
+
+void table_cell_text(int row, int col, char* out, std::size_t size, int max_chars) {
+    out[0] = '\0';
+    CalcReal x = real(0.0);
+    if (g.table_auto) {
+        x = round_table_value(table_x_for_row(row));
+    } else {
+        if (!table_manual_x_value(row, x)) {
+            return;
+        }
+        x = round_table_value(x);
+    }
+    if (col == 0) {
+        format_table_value(x, out, size, max_chars);
+        return;
+    }
+    const int eq = col - 1;
+    if (eq < 0 || eq >= kMaxYEquations || g.y_len[eq] == 0) {
+        return;
+    }
+    EvalResult result = evaluate_expression_with_x_readonly(g.y_expr[eq], g.eval, x);
+    if (!result.ok) {
+        copy_string(out, size, "ERR");
+        return;
+    }
+    if (near_zero(result.imag) && !g.fraction_output) {
+        format_table_value(result.value, out, size, max_chars);
+    } else {
+        format_result_value(result, out, size);
+    }
+}
+
+void render_table(Display& display) {
+    clear(display, kWhite);
+    title(display, g.table_auto ? "TABLE AUTO" : "TABLE MANUAL");
+    ensure_table_selection_visible();
+    constexpr int x_col_w = 64;
+    constexpr int y_col_w = (kLcdWidth - x_col_w) / kTableVisibleYColumns;
+    constexpr int header_y = kTitleH;
+    constexpr int header_h = 18;
+    constexpr int row_y0 = kTitleH + header_h;
+    constexpr int row_h = (kLcdHeight - row_y0) / kTableVisibleRows;
+
+    fill_rect(display, 0, header_y, x_col_w, header_h, kLightGray);
+    draw_rect(display, 0, header_y, x_col_w, header_h, kGray);
+    draw_text_scaled(display, 4, header_y + 4, "X", 1, kBlack, kLightGray);
+    for (int visible_col = 0; visible_col < kTableVisibleYColumns; ++visible_col) {
+        const int col = g.table_first_col + visible_col;
+        const int x = x_col_w + visible_col * y_col_w;
+        fill_rect(display, x, header_y, y_col_w, header_h, kLightGray);
+        draw_rect(display, x, header_y, y_col_w, header_h, kGray);
+        char label[8]{};
+        table_header_label(col, label, sizeof(label));
+        draw_text_scaled(display, x + 4, header_y + 4, label, 1, graph_color(col - 1), kLightGray);
+    }
+
+    for (int visible_row = 0; visible_row < kTableVisibleRows; ++visible_row) {
+        const int row = g.table_first_row + visible_row;
+        const int y = row_y0 + visible_row * row_h;
+        const bool x_selected = row == g.table_row && g.table_col == 0;
+        const Color x_bg = x_selected ? kLightGray : kWhite;
+        fill_rect(display, 0, y, x_col_w, row_h, x_bg);
+        draw_rect(display, 0, y, x_col_w, row_h, kGray);
+        if (!g.table_auto) {
+            ManualTableEntry* entry = find_manual_table_entry(row);
+            const char* text = entry == nullptr ? "" : entry->text;
+            const int cursor = x_selected && entry != nullptr ? entry->cursor : -1;
+            draw_expression(display, 4, y + 2, text, cursor, kBlack, x_bg);
+        } else {
+            char text[32]{};
+            table_cell_text(row, 0, text, sizeof(text), (x_col_w - 6) / 8);
+            draw_text_scaled(display, 4, y + 4, text, 1, kBlack, x_bg);
+        }
+        for (int visible_col = 0; visible_col < kTableVisibleYColumns; ++visible_col) {
+            const int col = g.table_first_col + visible_col;
+            const int x = x_col_w + visible_col * y_col_w;
+            const bool selected = row == g.table_row && col == g.table_col;
+            const Color bg = selected ? kLightGray : kWhite;
+            fill_rect(display, x, y, y_col_w, row_h, bg);
+            draw_rect(display, x, y, y_col_w, row_h, kGray);
+            char text[32]{};
+            table_cell_text(row, col, text, sizeof(text), (y_col_w - 6) / 8);
+            draw_text_scaled(display, x + 4, y + 4, text, 1, graph_color(col - 1), bg);
+        }
+    }
 }
 
 void render_settings(Display& display) {
@@ -2266,15 +4369,29 @@ void calc_init(Platform& platform) {
     g.platform = &platform;
     g.screen = Screen::Home;
     eval_context_init(g.eval);
-    g.window = {real(-10.0), real(10.0), real(-6.55), real(6.55)};
-    copy_string(g.y_expr, sizeof(g.y_expr), "sin(X)");
-    g.y_len = static_cast<int>(std::strlen(g.y_expr));
-    g.y_cursor = g.y_len;
+    g.window = {real(-10.0), real(10.0), real(-10.0), real(10.0)};
+    g.table_auto = true;
+    g.table_start = real(0.0);
+    g.table_step = real(1.0);
+    g.table_row = 0;
+    g.table_col = 0;
+    g.table_first_row = 0;
+    g.table_first_col = 1;
+    g.y_selection = 0;
+    g.y_first_row = 0;
+    g.trace_active = false;
+    g.trace_eq = 0;
+    g.trace_x = real(0.0);
+    g.trace_grid_index = 0;
+    clear_trace_poi_labels();
+    clear_trace_entry();
+    sync_window_edit_from_values();
     reset_home_expression();
     g.cursor_on = true;
     g.history_selection = -1;
     g.edit_cursor_before_history = 0;
     g.settings_selection = 0;
+    g.zoom_pending = false;
     g.fraction_output = false;
     g.last_tick_ms = millis();
 }
@@ -2299,6 +4416,7 @@ void calc_key_down(Key key) {
         case Screen::YEquals: handle_y_key(key); break;
         case Screen::Graph: handle_graph_key(key); break;
         case Screen::Window: handle_window_key(key); break;
+        case Screen::Table: handle_table_key(key); break;
         case Screen::Settings: handle_settings_key(key); break;
         case Screen::About:
             if (key == Key::Enter || key == Key::Clear) {
@@ -2320,6 +4438,7 @@ void calc_render() {
         case Screen::Graph: render_graph(display); break;
         case Screen::YEquals: render_y(display); break;
         case Screen::Window: render_window(display); break;
+        case Screen::Table: render_table(display); break;
         case Screen::Settings: render_settings(display); break;
         case Screen::About: render_about(display); break;
     }
@@ -2384,7 +4503,9 @@ int calc_debug_home_cursor() {
 }
 
 const char* calc_debug_home_expression() {
-    return g.home_expr;
+    static char visible[kExpressionCapacity]{};
+    sanitize_expression(g.home_expr, visible, sizeof(visible));
+    return visible;
 }
 
 int calc_debug_home_scroll_x() {

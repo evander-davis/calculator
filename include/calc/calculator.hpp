@@ -52,6 +52,7 @@ enum class Key : std::uint8_t {
     Window,
     Settings,
     About,
+    Table,
     Vars,
     Sin,
     Cos,
@@ -118,7 +119,8 @@ enum class Screen : std::uint8_t {
     YEquals,
     Window,
     Settings,
-    About
+    About,
+    Table
 };
 
 struct Display {

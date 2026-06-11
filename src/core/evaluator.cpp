@@ -9,6 +9,8 @@ namespace {
 
 constexpr int kMaxTokens = 96;
 constexpr int kMaxStack = 32;
+constexpr char kAutoOpenParen = '\x1c';
+constexpr char kAutoCloseParen = '\x1d';
 
 constexpr CalcReal real(double value) {
     return static_cast<CalcReal>(value);
@@ -67,6 +69,14 @@ bool same_word(const char* text, int len, const char* word) {
         }
     }
     return true;
+}
+
+bool is_open_paren(char ch) {
+    return ch == '(' || ch == kAutoOpenParen;
+}
+
+bool is_close_paren(char ch) {
+    return ch == ')' || ch == kAutoCloseParen;
 }
 
 bool is_right_assoc(char op) {
@@ -269,9 +279,9 @@ bool append_text(char* out, int& pos, int cap, const char* text) {
 int matching_paren_local(const char* expr, int open, int end) {
     int depth = 0;
     for (int i = open; i < end; ++i) {
-        if (expr[i] == '(') {
+        if (is_open_paren(expr[i])) {
             ++depth;
-        } else if (expr[i] == ')') {
+        } else if (is_close_paren(expr[i])) {
             --depth;
             if (depth == 0) {
                 return i;
@@ -286,7 +296,7 @@ bool expand_roots_range(const char* expr, int start, int end, char* out, int& po
         if (i + 6 <= end && std::strncmp(expr + i, "root(", 5) == 0) {
             const int index_open = i + 4;
             const int index_close = matching_paren_local(expr, index_open, end);
-            if (index_close > 0 && index_close + 1 < end && expr[index_close + 1] == '(') {
+            if (index_close > 0 && index_close + 1 < end && is_open_paren(expr[index_close + 1])) {
                 const int rad_open = index_close + 1;
                 const int rad_close = matching_paren_local(expr, rad_open, end);
                 if (rad_close > 0) {
@@ -604,7 +614,7 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
             return false;
         }
 
-        if (expression[i] == '(') {
+        if (is_open_paren(expression[i])) {
             if (!expect_operand && !push_binary_operator(state, '*', i)) {
                 return false;
             }
@@ -619,7 +629,7 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
             continue;
         }
 
-        if (expression[i] == ')') {
+        if (is_close_paren(expression[i])) {
             bool found_lparen = false;
             while (state.operator_count > 0) {
                 const Token top = state.operators[state.operator_count - 1];
@@ -828,9 +838,9 @@ const char* skip_spaces(const char* text) {
 int find_store_arrow(const char* expression) {
     int depth = 0;
     for (int i = 0; expression[i] != '\0'; ++i) {
-        if (expression[i] == '(') {
+        if (is_open_paren(expression[i])) {
             ++depth;
-        } else if (expression[i] == ')' && depth > 0) {
+        } else if (is_close_paren(expression[i]) && depth > 0) {
             --depth;
         } else if (depth == 0 && expression[i] == '-' && expression[i + 1] == '>') {
             return i;
