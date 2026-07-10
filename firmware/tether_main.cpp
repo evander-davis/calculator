@@ -19,6 +19,9 @@ constexpr std::uint8_t kRefreshPacket = 'R';
 
 constexpr int kTileWidth = 16;
 constexpr int kTileHeight = 16;
+constexpr int kTileColumns = calc::kLcdWidth / kTileWidth;
+constexpr int kTileRows = calc::kLcdHeight / kTileHeight;
+constexpr int kTileCount = kTileColumns * kTileRows;
 constexpr int kTilePayloadBytes = kTileWidth * kTileHeight * static_cast<int>(sizeof(calc::Color));
 constexpr int kDirtyHeaderBytes = 16;
 constexpr int kEndPacketBytes = 20;
@@ -30,8 +33,9 @@ struct FrameReady {
 };
 
 calc::Color g_lcd[calc::kLcdWidth * calc::kLcdHeight]{};
-calc::Color g_sent_lcd[calc::kLcdWidth * calc::kLcdHeight]{};
+std::uint32_t g_sent_tile_hash[kTileCount]{};
 std::uint8_t g_tx_packet[kDirtyHeaderBytes + kTilePayloadBytes]{};
+alignas(8) std::uint32_t g_calculator_stack[2048]{};
 
 mutex_t g_framebuffer_mutex;
 queue_t g_key_queue;
@@ -82,8 +86,8 @@ void consume_host_packets() {
 }
 
 bool prepare_dirty_tile(std::uint32_t sequence, int x, int y, int width, int height, bool force) {
-    bool changed = force;
     int packet_offset = kDirtyHeaderBytes;
+    std::uint32_t hash = 2166136261u;
 
     mutex_enter_blocking(&g_framebuffer_mutex);
     for (int row = 0; row < height; ++row) {
@@ -91,22 +95,18 @@ bool prepare_dirty_tile(std::uint32_t sequence, int x, int y, int width, int hei
         for (int column = 0; column < width; ++column) {
             const int index = framebuffer_row + column;
             const calc::Color pixel = g_lcd[index];
-            if (pixel != g_sent_lcd[index]) {
-                changed = true;
-            }
-            g_tx_packet[packet_offset++] = static_cast<std::uint8_t>(pixel & 0xffu);
-            g_tx_packet[packet_offset++] = static_cast<std::uint8_t>((pixel >> 8u) & 0xffu);
+            const std::uint8_t low = static_cast<std::uint8_t>(pixel & 0xffu);
+            const std::uint8_t high = static_cast<std::uint8_t>((pixel >> 8u) & 0xffu);
+            g_tx_packet[packet_offset++] = low;
+            g_tx_packet[packet_offset++] = high;
+            hash = (hash ^ low) * 16777619u;
+            hash = (hash ^ high) * 16777619u;
         }
     }
-
+    const int tile_index = (y / kTileHeight) * kTileColumns + x / kTileWidth;
+    const bool changed = force || hash != g_sent_tile_hash[tile_index];
     if (changed) {
-        for (int row = 0; row < height; ++row) {
-            const int framebuffer_row = (y + row) * calc::kLcdWidth + x;
-            for (int column = 0; column < width; ++column) {
-                const int index = framebuffer_row + column;
-                g_sent_lcd[index] = g_lcd[index];
-            }
-        }
+        g_sent_tile_hash[tile_index] = hash;
     }
     mutex_exit(&g_framebuffer_mutex);
 
@@ -212,7 +212,7 @@ void usb_transport_main() {
 void process_calculator_keys() {
     std::uint8_t raw_key = 0;
     while (queue_try_remove(&g_key_queue, &raw_key)) {
-        if (raw_key == 0 || raw_key > static_cast<std::uint8_t>(calc::Key::Imaginary)) {
+        if (raw_key == 0 || raw_key > static_cast<std::uint8_t>(calc::Key::ExpPower)) {
             continue;
         }
         const calc::Key key = static_cast<calc::Key>(raw_key);
@@ -246,7 +246,7 @@ void calculator_core_main() {
         calc::calc_tick();
 
         const std::uint32_t now = clock_millis(nullptr);
-        if (now - last_render_ms >= kRenderIntervalMs) {
+        if (calc::calc_needs_render() && now - last_render_ms >= kRenderIntervalMs) {
             render_calculator_frame();
             last_render_ms = now;
         }
@@ -263,6 +263,6 @@ int main() {
     queue_init(&g_key_queue, sizeof(std::uint8_t), 32);
     queue_init(&g_frame_queue, sizeof(FrameReady), 2);
 
-    multicore_launch_core1(calculator_core_main);
+    multicore_launch_core1_with_stack(calculator_core_main, g_calculator_stack, sizeof(g_calculator_stack));
     usb_transport_main();
 }

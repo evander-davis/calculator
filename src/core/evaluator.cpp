@@ -83,6 +83,12 @@ struct ParseState {
     int error_pos;
 };
 
+// Evaluation is single-threaded. Keep the large fixed workspaces out of the
+// RP2350 core stack and reuse compiled RPN for graph samples.
+ParseState g_cached_parse{};
+char g_cached_source[kExpressionCapacity]{};
+bool g_cached_parse_valid = false;
+
 bool same_word(const char* text, int len, const char* word) {
     const int word_len = static_cast<int>(std::strlen(word));
     if (len != word_len) {
@@ -445,6 +451,8 @@ struct ComplexValue {
     CalcReal imag;
 };
 
+ComplexValue g_eval_stack[kMaxStack]{};
+
 EvalResult fail(EvalError error, int pos) {
     EvalResult result{};
     result.ok = false;
@@ -780,6 +788,17 @@ SpecialFunction special_function_at(const char* expr, int pos, int end, int& nam
     return SpecialFunction::None;
 }
 
+bool contains_special_function(const char* expression) {
+    const int len = static_cast<int>(std::strlen(expression));
+    for (int pos = 0; pos < len; ++pos) {
+        int name_len = 0;
+        if (special_function_at(expression, pos, len, name_len) != SpecialFunction::None) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool split_args(const char* expr, int start, int end, ArgRange* args, int max_args, int& count) {
     count = 0;
     int depth = 0;
@@ -897,9 +916,10 @@ bool compute_special_function(const char* expr,
             !evaluate_real_range(expr, args[2], context, override_variable, override_value, x)) {
             return false;
         }
-        CalcReal h = std::fabs(x) * real(0.00001);
-        if (h < real(0.00001)) {
-            h = real(0.00001);
+        const CalcReal relative_step = sizeof(CalcReal) == sizeof(float) ? real(0.001) : real(0.00001);
+        CalcReal h = std::fabs(x) * relative_step;
+        if (h < relative_step) {
+            h = relative_step;
         }
         CalcReal lhs = real(0.0);
         CalcReal rhs = real(0.0);
@@ -1022,7 +1042,8 @@ bool compute_special_function(const char* expr,
 
 bool append_number_text(char* out, int& pos, int cap, CalcReal value) {
     char text[32]{};
-    const int written = std::snprintf(text, sizeof(text), "%.17g", static_cast<double>(value));
+    const char* format = sizeof(CalcReal) == sizeof(float) ? "%.9g" : "%.17g";
+    const int written = std::snprintf(text, sizeof(text), format, static_cast<double>(value));
     if (written <= 0 || written >= static_cast<int>(sizeof(text))) {
         return false;
     }
@@ -1368,7 +1389,7 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
 }
 
 EvalResult evaluate_rpn(const ParseState& state, EvalContext& context, char override_variable, CalcReal override_value) {
-    ComplexValue stack[kMaxStack]{};
+    ComplexValue* stack = g_eval_stack;
     int stack_count = 0;
 
     for (int i = 0; i < state.output_count; ++i) {
@@ -1801,9 +1822,16 @@ EvalResult evaluate_impl(const char* expression,
         }
     }
 
-    ParseState state{};
-    state.error = EvalError::None;
-    state.error_pos = -1;
+    const bool cacheable = !contains_special_function(start);
+    if (cacheable && g_cached_parse_valid && std::strcmp(start, g_cached_source) == 0) {
+        EvalResult result = evaluate_rpn(g_cached_parse, context, override_variable, override_value);
+        if (result.ok && update_ans) {
+            context.ans = result.value;
+            context.ans_imag = result.imag;
+        }
+        return result;
+    }
+
     char special_expanded[kExpressionCapacity]{};
     if (!expand_special_functions(start, context, override_variable, override_value, special_expanded, kExpressionCapacity)) {
         return fail(EvalError::Domain, 0);
@@ -1812,8 +1840,20 @@ EvalResult evaluate_impl(const char* expression,
     if (!expand_roots(special_expanded, expanded, kExpressionCapacity)) {
         return fail(EvalError::TooManyTokens, 0);
     }
+    ParseState& state = g_cached_parse;
+    state.output_count = 0;
+    state.operator_count = 0;
+    state.error = EvalError::None;
+    state.error_pos = -1;
     if (!parse_to_rpn(expanded, state)) {
+        g_cached_parse_valid = false;
         return fail(state.error, state.error_pos);
+    }
+    if (cacheable) {
+        std::snprintf(g_cached_source, sizeof(g_cached_source), "%s", start);
+        g_cached_parse_valid = true;
+    } else {
+        g_cached_parse_valid = false;
     }
 
     EvalResult result = evaluate_rpn(state, context, override_variable, override_value);

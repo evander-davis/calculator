@@ -1,5 +1,6 @@
 #include "calc/calculator.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
@@ -138,6 +139,16 @@ int main() {
     check(result.ok && nearly(result.value, 15.0), "readonly x evaluation");
     check(nearly(context.ans, ans_before_readonly), "readonly evaluation leaves ans unchanged");
 
+    char deeply_nested[96]{};
+    constexpr int nested_pairs = 40;
+    for (int i = 0; i < nested_pairs; ++i) {
+        deeply_nested[i] = '(';
+        deeply_nested[nested_pairs + 1 + i] = ')';
+    }
+    deeply_nested[nested_pairs] = '1';
+    result = calc::evaluate_expression(deeply_nested, context);
+    check(result.ok && nearly(result.value, 1.0), "deep parentheses stay within fixed evaluator bounds");
+
     calc::GraphWindow window{-10.0, 10.0, -5.0, 5.0};
     int sx = -1;
     int sy = -1;
@@ -165,6 +176,9 @@ int main() {
     platform.clock = {&clock, clock_millis};
     calc::calc_init(platform);
     check(calc::calc_screen() == calc::Screen::Home, "initial screen");
+    check(calc::calc_needs_render(), "initial state requests render");
+    calc::calc_render();
+    check(!calc::calc_needs_render(), "render clears dirty state");
 
     press(calc::Key::Math);
     check(calc::calc_screen() == calc::Screen::MathMenu, "math key opens math menu");
@@ -250,6 +264,24 @@ int main() {
     press(calc::Key::Dot);
     check(std::strcmp(calc::calc_debug_home_expression(), "i") == 0,
           "alpha dot inserts imaginary i");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::Second);
+    press(calc::Key::Log);
+    check(std::strcmp(calc::calc_debug_home_expression(), "10^()") == 0 && calc::calc_debug_home_cursor() == 4,
+          "second log inserts ten-to-the-x template");
+    press(calc::Key::Digit2);
+    result = calc::evaluate_expression(calc::calc_debug_home_expression(), context);
+    check(result.ok && nearly(result.value, 100.0), "ten-to-the-x template evaluates");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::Second);
+    press(calc::Key::Ln);
+    check(std::strcmp(calc::calc_debug_home_expression(), "e^()") == 0 && calc::calc_debug_home_cursor() == 3,
+          "second ln inserts e-to-the-x template");
+    press(calc::Key::Digit1);
+    result = calc::evaluate_expression(calc::calc_debug_home_expression(), context);
+    check(result.ok && nearly(result.value, std::exp(calc::CalcReal(1.0))), "e-to-the-x template evaluates");
 
     calc::calc_debug_set_home_expression("12", 2);
     press(calc::Key::Delete);
@@ -470,7 +502,20 @@ int main() {
     press(calc::Key::Graph);
     check(calc::calc_screen() == calc::Screen::Graph, "graph navigation from window");
 
+    press(calc::Key::YEquals);
+    press(calc::Key::Sin);
+    press(calc::Key::X);
+    press(calc::Key::Graph);
+    const auto graph_start = std::chrono::steady_clock::now();
     calc::calc_render();
+    const auto graph_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - graph_start);
+    std::printf("Graph render benchmark: %lld ms\n", static_cast<long long>(graph_elapsed.count()));
+    check(graph_elapsed.count() < 1000, "graph render completes within host performance guardrail");
+    check(!calc::calc_needs_render(), "graph render clears dirty state");
+    clock.now += 500;
+    calc::calc_tick();
+    check(!calc::calc_needs_render(), "static graph skips cursor-only redraw");
     std::uint32_t graph_nonwhite = 0;
     for (calc::Color pixel : pixels) {
         if (pixel != 0xffff) {

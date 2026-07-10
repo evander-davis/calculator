@@ -110,7 +110,9 @@ enum class Key : std::uint8_t {
     On,
     Negate,
     Fraction,
-    Imaginary
+    Imaginary,
+    TenPower,
+    ExpPower
 };
 
 enum class Screen : std::uint8_t {
@@ -236,6 +238,7 @@ void calc_init(Platform& platform);
 void calc_tick();
 void calc_key_down(Key key);
 void calc_key_up(Key key);
+bool calc_needs_render();
 void calc_render();
 Screen calc_screen();
 bool calc_debug_layout_expression(const char* expression, LayoutDebugInfo& info);

@@ -93,6 +93,7 @@ struct CalculatorState {
     Key last_key;
     bool second_active;
     bool alpha_active;
+    bool render_dirty;
     bool zoom_pending;
     int history_selection;
     int edit_cursor_before_history;
@@ -627,6 +628,13 @@ void insert_power_value(char* buffer, int& len, int& cursor, const char* value) 
     if (cursor < len && buffer[cursor] == ')') {
         ++cursor;
     }
+}
+
+void insert_base_power(char* buffer, int& len, int& cursor, const char* base) {
+    if (!insert_text(buffer, len, cursor, base)) {
+        return;
+    }
+    insert_power_template(buffer, len, cursor);
 }
 
 void insert_fraction(char* buffer, int& len, int& cursor) {
@@ -1508,6 +1516,8 @@ bool insert_for_key(Key key, char* buffer, int& len, int& cursor) {
         case Key::Sqrt: return insert_function_open_auto(buffer, len, cursor, "sqrt(");
         case Key::Log: return insert_function_open_auto(buffer, len, cursor, "log(");
         case Key::Ln: return insert_function_open_auto(buffer, len, cursor, "ln(");
+        case Key::TenPower: insert_base_power(buffer, len, cursor, "10"); return true;
+        case Key::ExpPower: insert_base_power(buffer, len, cursor, "e"); return true;
         case Key::Ans: return insert_text(buffer, len, cursor, "Ans");
         case Key::Pi: return insert_text(buffer, len, cursor, "pi");
         case Key::ConstE: return insert_text(buffer, len, cursor, "e");
@@ -1865,6 +1875,8 @@ Key second_key(Key key) {
         case Key::Sin: return Key::ASin;
         case Key::Cos: return Key::ACos;
         case Key::Tan: return Key::ATan;
+        case Key::Log: return Key::TenPower;
+        case Key::Ln: return Key::ExpPower;
         case Key::FracDecimal: return Key::Pi;
         case Key::Divide: return Key::ConstE;
         case Key::Comma: return Key::ConstE;
@@ -3943,14 +3955,14 @@ bool evaluate_y_at(int eq, CalcReal x, CalcReal& y) {
 }
 
 bool should_connect_graph_points(int eq, CalcReal x0, CalcReal y0, CalcReal x1, CalcReal y1) {
-    const CalcReal mid_x = (x0 + x1) * real(0.5);
-    CalcReal mid_y = real(0.0);
-    if (!evaluate_y_at(eq, mid_x, mid_y)) {
-        return false;
-    }
     const bool crosses_entire_window = (y0 < g.window.ymin && y1 > g.window.ymax) ||
                                        (y1 < g.window.ymin && y0 > g.window.ymax);
-    if (crosses_entire_window && (mid_y < g.window.ymin || mid_y > g.window.ymax)) {
+    if (!crosses_entire_window) {
+        return true;
+    }
+    const CalcReal mid_x = (x0 + x1) * real(0.5);
+    CalcReal mid_y = real(0.0);
+    if (!evaluate_y_at(eq, mid_x, mid_y) || mid_y < g.window.ymin || mid_y > g.window.ymax) {
         return false;
     }
     return true;
@@ -5234,6 +5246,7 @@ void calc_init(Platform& platform) {
     g.edit_cursor_before_history = 0;
     g.settings_selection = 0;
     g.zoom_pending = false;
+    g.render_dirty = true;
     g.fraction_output = false;
     g.math_return_screen = Screen::Home;
     g.math_tab = 0;
@@ -5248,10 +5261,15 @@ void calc_tick() {
     if (now - g.last_tick_ms >= 500u) {
         g.cursor_on = !g.cursor_on;
         g.last_tick_ms = now;
+        if (g.screen == Screen::Home || g.screen == Screen::YEquals || g.screen == Screen::Window ||
+            g.screen == Screen::Solver || (g.screen == Screen::Graph && g.trace_active)) {
+            g.render_dirty = true;
+        }
     }
 }
 
 void calc_key_down(Key key) {
+    g.render_dirty = true;
     key = translate_layer_key(key);
     if (key == Key::None) {
         return;
@@ -5277,6 +5295,10 @@ void calc_key_down(Key key) {
 
 void calc_key_up(Key) {}
 
+bool calc_needs_render() {
+    return g.render_dirty;
+}
+
 void calc_render() {
     if (g.platform == nullptr || g.platform->display.pixels == nullptr) {
         return;
@@ -5293,6 +5315,7 @@ void calc_render() {
         case Screen::Solver: render_solver(display); break;
         case Screen::About: render_about(display); break;
     }
+    g.render_dirty = false;
 }
 
 Screen calc_screen() {

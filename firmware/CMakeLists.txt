@@ -12,6 +12,8 @@ project(calc_tether_firmware C CXX ASM)
 
 pico_sdk_init()
 
+option(CALC_USE_FLOAT "Use hardware-accelerated float math in firmware" ON)
+
 add_executable(calc_tether
     tether_main.cpp
     ../src/core/calculator.cpp
@@ -36,6 +38,7 @@ if(CALC_USE_FLOAT)
 endif()
 
 target_compile_definitions(calc_tether PRIVATE
+    PICO_CORE1_STACK_SIZE=0
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=0
     PICO_STDIO_USB_DEFAULT_CRLF=0
 )

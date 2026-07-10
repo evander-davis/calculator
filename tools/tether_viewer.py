@@ -119,6 +119,8 @@ class CalcKey(IntEnum):
     Negate = 90
     Fraction = 91
     Imaginary = 92
+    TenPower = 93
+    ExpPower = 94
 
 
 KEYS = {

@@ -77,12 +77,15 @@ To compare a firmware-style `float` numeric build, configure with:
 
 The current RP2350 target is a USB-tether test firmware for the Seeed XIAO
 RP2350. Core 0 owns USB transport and host key reception. Core 1 runs the
-portable calculator and renders at up to 60 Hz. The transport compares 16x16 RGB565
-tiles against the last transmitted image, sends only changed tiles, and sends a
-full dirty-tile keyframe when the viewer connects or requests recovery. This
-keeps key handling responsive while large screen updates are in flight and
-allows small cursor/menu changes to update much faster than full-frame USB
-streaming.
+portable calculator and renders changed or cursor-blinking screens at up to
+60 Hz. Firmware uses hardware-accelerated `float` math by default and gives the
+calculator core an explicit 8 KiB stack in main SRAM. The transport hashes
+16x16 RGB565 tiles, sends only changed tiles, and sends a full dirty-tile
+keyframe when the viewer connects or requests recovery. Tile hashes replace a
+second full framebuffer, saving about 149 KiB of RAM, while on-demand rendering
+avoids re-evaluating static graphs. This keeps key handling responsive while
+large screen updates are in flight and allows small cursor/menu changes to
+update much faster than full-frame USB streaming.
 
 Configure once, if the build directory does not already exist:
 
