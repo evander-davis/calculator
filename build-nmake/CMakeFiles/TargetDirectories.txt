@@ -1,5 +1,0 @@
-C:/Documents/calculator/build-nmake/CMakeFiles/calc_core.dir
-C:/Documents/calculator/build-nmake/CMakeFiles/calc_core_tests.dir
-C:/Documents/calculator/build-nmake/CMakeFiles/test.dir
-C:/Documents/calculator/build-nmake/CMakeFiles/edit_cache.dir
-C:/Documents/calculator/build-nmake/CMakeFiles/rebuild_cache.dir

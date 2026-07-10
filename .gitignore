@@ -1,11 +1,28 @@
-build/
-build-*/
-out/
-.cache/
+# Generated build and tool trees belong outside the source layout.
+/build/
+/build-*/
+/out/
+/picotool-install/
+/.cache/
+
+# Compiler, test, and firmware outputs.
 *.obj
 *.o
+*.lib
 *.exe
+*.dll
 *.pdb
 *.ilk
 *.ppm
+*.bmp
+*.elf
+*.hex
+*.map
+*.uf2
 calc_*.bin
+
+# Deliberately promoted, current runnable artifacts.
+!/artifacts/emulator/calc_emulator.exe
+!/artifacts/emulator/SDL2.dll
+!/artifacts/firmware/calc_tether.bin
+!/artifacts/firmware/calc_tether.uf2

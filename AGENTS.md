@@ -82,14 +82,14 @@ over letting hardware-specific code leak into the core.
 For portable core changes:
 
 ```powershell
-cmake --build build-sdl
-ctest --test-dir build-sdl --output-on-failure
+cmake --build out/emulator-build
+ctest --test-dir out/emulator-build --output-on-failure
 ```
 
 For visual/UI changes, also inspect the emulator and/or generated screenshots:
 
 ```powershell
-.\build-sdl\calc_emulator.exe
+.\out\emulator-build\calc_emulator.exe
 ```
 
 For RP2350 tether builds, ensure `PICO_SDK_PATH` is set and `picotool.exe` can
@@ -98,7 +98,7 @@ find `libusb-1.0.dll` through the vcpkg bin directory:
 ```powershell
 $env:PICO_SDK_PATH = 'C:\tmp\pico-sdk'
 $env:PATH = 'C:\tmp\vcpkg\installed\x64-windows\bin;' + $env:PATH
-cmake --build build-xiao-tether-arm4 --clean-first
+cmake --build out/firmware-build --clean-first
 ```
 
 If Pico SDK's `picotool uf2 convert` step fails, `tools/bin_to_uf2.py` can

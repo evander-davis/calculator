@@ -18,6 +18,8 @@ firmware/                  RP2350 USB-tether firmware target
 tests/                     Host-side core and rendering tests
 tools/                     Glyph generation, UF2 conversion, serial viewer
 docs/                      Architecture, keymap, and hardware-port notes
+artifacts/emulator/        Current packaged Windows emulator
+artifacts/firmware/        Current flashable RP2350 tether firmware
 glyphs.txt                 Editable bitmap glyph source
 calculator_keys.xlsx       Physical keypad layout reference
 ```
@@ -46,16 +48,16 @@ On Windows, this one-line command is safe to paste into regular PowerShell. It
 uses the Visual Studio build environment and vcpkg SDL2 toolchain:
 
 ```powershell
-cd C:\Documents\calculator; cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64 && "C:\Program Files\CMake\bin\cmake.exe" -S . -B build-sdl -G "NMake Makefiles" -DCMAKE_TOOLCHAIN_FILE=C:\tmp\vcpkg\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCALC_BUILD_EMULATOR=ON && "C:\Program Files\CMake\bin\cmake.exe" --build build-sdl && "C:\Program Files\CMake\bin\ctest.exe" --test-dir build-sdl --output-on-failure'
+cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64 && cmake -S . -B out\emulator-build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=C:\tmp\vcpkg\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCALC_BUILD_EMULATOR=ON && cmake --build out\emulator-build && ctest --test-dir out\emulator-build --output-on-failure'
 ```
 
 Generic CMake commands also work when the shell already has a configured C++
 compiler, build tool, Windows resource compiler, and SDL2 discovery path:
 
 ```powershell
-cmake -S . -B build
-cmake --build build
-ctest --test-dir build --output-on-failure
+cmake -S . -B out/core-build
+cmake --build out/core-build
+ctest --test-dir out/core-build --output-on-failure
 ```
 
 If SDL2 is installed, CMake builds `calc_emulator`. If SDL2 is not found, the
@@ -64,7 +66,7 @@ core library and tests still build.
 Launch the desktop emulator:
 
 ```powershell
-.\build-sdl\calc_emulator.exe
+.\artifacts\emulator\calc_emulator.exe
 ```
 
 To compare a firmware-style `float` numeric build, configure with:
@@ -97,7 +99,7 @@ Configure once, if the build directory does not already exist:
 
 ```powershell
 $env:PICO_SDK_PATH = 'C:\tmp\pico-sdk'
-cmake -S firmware -B build-xiao-tether-arm4 -G "NMake Makefiles" -DPICO_BOARD=seeed_xiao_rp2350
+cmake -S firmware -B out/firmware-build -G "NMake Makefiles" -DPICO_BOARD=seeed_xiao_rp2350
 ```
 
 Build from current source. The `PATH` addition lets the local `picotool.exe`
@@ -106,18 +108,20 @@ find `libusb-1.0.dll`:
 ```powershell
 $env:PICO_SDK_PATH = 'C:\tmp\pico-sdk'
 $env:PATH = 'C:\tmp\vcpkg\installed\x64-windows\bin;' + $env:PATH
-cmake --build build-xiao-tether-arm4 --clean-first
+cmake --build out/firmware-build --clean-first
 ```
 
 If Pico SDK's `picotool uf2 convert` step fails after a successful link, convert
 the fresh `.bin` manually:
 
 ```powershell
-py tools\bin_to_uf2.py build-xiao-tether-arm4\calc_tether.bin build-xiao-tether-arm4\calc_tether.uf2 --family rp2350-arm-s --base 0x10000000 --abs-block 0x10FFFF00
+py tools\bin_to_uf2.py out\firmware-build\calc_tether.bin out\firmware-build\calc_tether.uf2 --family rp2350-arm-s --base 0x10000000 --abs-block 0x10FFFF00
 ```
 
-Flash through BOOTSEL by copying `build-xiao-tether-arm4\calc_tether.uf2` to
-the RP2350 bootloader drive, or use `picotool` when available.
+Flash the promoted current build through BOOTSEL by copying
+`artifacts\firmware\calc_tether.uf2` to the RP2350 bootloader drive. A newly
+built `out\firmware-build\calc_tether.uf2` can be used directly before it is
+promoted into `artifacts`.
 
 Launch the computer-side tether screen after flashing:
 
@@ -148,20 +152,25 @@ py -m pip install pyserial
 Run all host tests:
 
 ```powershell
-ctest --test-dir build-sdl --output-on-failure
+ctest --test-dir out/emulator-build --output-on-failure
 ```
 
 `ctest` runs both unit tests and the screenshot-based visual verifier. The
 visual verifier writes deterministic 320x240 LCD screenshots to:
 
 ```powershell
-C:\Documents\calculator\build-sdl\visual_screenshots
+C:\Documents\calculator\out\emulator-build\visual_screenshots
 ```
 
 Those `.ppm` and `.bmp` files cover exponent cursor movement, fraction cursor
 movement, long-expression scrolling in both directions, tall history rows,
 history row selection, deep nested equation layout, square roots inside
 exponents, and exponents/square roots inside fractions.
+
+Generated build trees, test executables, screenshots, and local tool installs
+belong under ignored `out/` paths and are not versioned. Only the current,
+verified runnable packages in `artifacts/` are retained; see
+`artifacts/README.md` for their contents and checksums.
 
 ## MVP Behavior
 
