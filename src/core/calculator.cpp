@@ -32,6 +32,9 @@ constexpr int kTableVisibleYColumns = 4;
 constexpr int kTableVisibleRows = 12;
 constexpr int kTableManualCapacity = 32;
 constexpr int kMaxTracePoiLabels = 4;
+constexpr int kMathTabCount = 5;
+constexpr int kMathVisibleRows = 12;
+constexpr int kSolverValueRows = 3;
 constexpr int kPlotTop = kTitleH;
 constexpr int kPlotBottom = kLcdHeight - 1;
 constexpr char kAutoOpenParen = '\x1c';
@@ -95,6 +98,20 @@ struct CalculatorState {
     int edit_cursor_before_history;
     int history_first_entry;
     bool fraction_output;
+    Screen math_return_screen;
+    int math_tab;
+    int math_row;
+    int math_first_row;
+    char solver_expr[kExpressionCapacity];
+    int solver_len;
+    int solver_cursor;
+    int solver_scroll_x;
+    char solver_variable;
+    char solver_value[kSolverValueRows][kWindowValueCapacity];
+    int solver_value_len[kSolverValueRows];
+    int solver_value_cursor[kSolverValueRows];
+    int solver_selection;
+    char solver_status[32];
     bool trace_active;
     int trace_eq;
     CalcReal trace_x;
@@ -109,6 +126,139 @@ struct CalculatorState {
 };
 
 CalculatorState g{};
+
+enum class MathMenuAction : std::uint8_t {
+    InsertRaw,
+    InsertFunction,
+    InsertFraction,
+    InsertMixedFraction,
+    InsertNthRoot,
+    InsertCubeRoot,
+    InsertCube,
+    FracOutput,
+    DecOutput,
+    ToggleFracDecimal,
+    OpenSolver,
+    NoOp
+};
+
+struct MathMenuItem {
+    char direct;
+    const char* label;
+    MathMenuAction action;
+    const char* text;
+    int cursor_delta;
+};
+
+struct MathMenuTab {
+    const char* title;
+    const MathMenuItem* items;
+    int count;
+};
+
+constexpr MathMenuItem kMathItems[] = {
+    {'1', ">Frac", MathMenuAction::FracOutput, nullptr, 0},
+    {'2', ">Dec", MathMenuAction::DecOutput, nullptr, 0},
+    {'3', "x^3", MathMenuAction::InsertCube, nullptr, 0},
+    {'4', "3root(", MathMenuAction::InsertCubeRoot, nullptr, 0},
+    {'5', "xroot", MathMenuAction::InsertNthRoot, nullptr, 0},
+    {'6', "fMin(", MathMenuAction::InsertRaw, "fMin(,,,)", -4},
+    {'7', "fMax(", MathMenuAction::InsertRaw, "fMax(,,,)", -4},
+    {'8', "nDeriv(", MathMenuAction::InsertRaw, "nDeriv(,,)", -3},
+    {'9', "fnInt(", MathMenuAction::InsertRaw, "fnInt(,,,)", -4},
+    {'0', "sum(", MathMenuAction::InsertRaw, "sum(,,,)", -4},
+    {'A', "logBASE(", MathMenuAction::InsertRaw, "logBASE(,)", -2},
+    {'B', "piecewise(", MathMenuAction::InsertRaw, "piecewise(,,,)", -4},
+    {'C', "Numeric Solver...", MathMenuAction::OpenSolver, nullptr, 0},
+};
+
+constexpr MathMenuItem kNumItems[] = {
+    {'1', "abs(", MathMenuAction::InsertFunction, "abs(", 0},
+    {'2', "round(", MathMenuAction::InsertRaw, "round(,)", -2},
+    {'3', "iPart(", MathMenuAction::InsertFunction, "iPart(", 0},
+    {'4', "fPart(", MathMenuAction::InsertFunction, "fPart(", 0},
+    {'5', "int(", MathMenuAction::InsertFunction, "int(", 0},
+    {'6', "min(", MathMenuAction::InsertRaw, "min(,)", -2},
+    {'7', "max(", MathMenuAction::InsertRaw, "max(,)", -2},
+    {'8', "lcm(", MathMenuAction::InsertRaw, "lcm(,)", -2},
+    {'9', "gcd(", MathMenuAction::InsertRaw, "gcd(,)", -2},
+    {'0', "remainder(", MathMenuAction::InsertRaw, "remainder(,)", -2},
+    {'A', ">n/d<>Un/d", MathMenuAction::NoOp, nullptr, 0},
+    {'B', ">F<>D", MathMenuAction::ToggleFracDecimal, nullptr, 0},
+    {'C', "Un/d", MathMenuAction::InsertMixedFraction, nullptr, 0},
+    {'D', "n/d", MathMenuAction::InsertFraction, nullptr, 0},
+};
+
+constexpr MathMenuItem kCmplxItems[] = {
+    {'1', "conj(", MathMenuAction::InsertFunction, "conj(", 0},
+    {'2', "real(", MathMenuAction::InsertFunction, "real(", 0},
+    {'3', "imag(", MathMenuAction::InsertFunction, "imag(", 0},
+    {'4', "angle(", MathMenuAction::InsertFunction, "angle(", 0},
+    {'5', "abs(", MathMenuAction::InsertFunction, "abs(", 0},
+    {'6', ">Rect", MathMenuAction::NoOp, nullptr, 0},
+    {'7', ">Polar", MathMenuAction::NoOp, nullptr, 0},
+};
+
+constexpr MathMenuItem kPrbItems[] = {
+    {'1', "rand", MathMenuAction::InsertRaw, "rand", 0},
+    {'2', "nPr", MathMenuAction::InsertRaw, "nPr(,)", -2},
+    {'3', "nCr", MathMenuAction::InsertRaw, "nCr(,)", -2},
+    {'4', "!", MathMenuAction::InsertRaw, "!", 0},
+    {'5', "randInt(", MathMenuAction::InsertRaw, "randInt(,)", -2},
+    {'6', "randNorm(", MathMenuAction::InsertRaw, "randNorm(,)", -2},
+    {'7', "randBin(", MathMenuAction::InsertRaw, "randBin(,)", -2},
+    {'8', "randIntNoRep(", MathMenuAction::InsertRaw, "randIntNoRep(,)", -2},
+};
+
+constexpr MathMenuItem kFracItems[] = {
+    {'1', "n/d", MathMenuAction::InsertFraction, nullptr, 0},
+    {'2', "Un/d", MathMenuAction::InsertMixedFraction, nullptr, 0},
+    {'3', ">F<>D", MathMenuAction::ToggleFracDecimal, nullptr, 0},
+    {'4', ">n/d<>Un/d", MathMenuAction::NoOp, nullptr, 0},
+};
+
+constexpr MathMenuTab kMathTabs[kMathTabCount] = {
+    {"MATH", kMathItems, static_cast<int>(sizeof(kMathItems) / sizeof(kMathItems[0]))},
+    {"NUM", kNumItems, static_cast<int>(sizeof(kNumItems) / sizeof(kNumItems[0]))},
+    {"CMPLX", kCmplxItems, static_cast<int>(sizeof(kCmplxItems) / sizeof(kCmplxItems[0]))},
+    {"PRB", kPrbItems, static_cast<int>(sizeof(kPrbItems) / sizeof(kPrbItems[0]))},
+    {"FRAC", kFracItems, static_cast<int>(sizeof(kFracItems) / sizeof(kFracItems[0]))},
+};
+
+struct AtomicRenderPrefix {
+    const char* source;
+    const char* label;
+};
+
+constexpr AtomicRenderPrefix kAtomicRenderPrefixes[] = {
+    {"abs(", "ABS("},
+    {"round(", "ROUND("},
+    {"iPart(", "IPART("},
+    {"fPart(", "FPART("},
+    {"int(", "INT("},
+    {"min(", "MIN("},
+    {"max(", "MAX("},
+    {"lcm(", "LCM("},
+    {"gcd(", "GCD("},
+    {"remainder(", "REMAINDER("},
+    {"logBASE(", "LOGBASE("},
+    {"conj(", "CONJ("},
+    {"real(", "REAL("},
+    {"imag(", "IMAG("},
+    {"angle(", "ANGLE("},
+    {"randInt(", "RANDINT("},
+    {"randNorm(", "RANDNORM("},
+    {"randBin(", "RANDBIN("},
+    {"randIntNoRep(", "RANDINTNOREP("},
+    {"nPr(", "NPR("},
+    {"nCr(", "NCR("},
+    {"fMin(", "FMIN("},
+    {"fMax(", "FMAX("},
+    {"nDeriv(", "NDERIV("},
+    {"fnInt(", "FNINT("},
+    {"sum(", "SUM("},
+    {"piecewise(", "PIECEWISE("},
+};
 
 std::uint32_t millis() {
     if (g.platform != nullptr && g.platform->clock.millis != nullptr) {
@@ -505,7 +655,40 @@ void backspace(char* buffer, int& len, int& cursor) {
         --cursor;
         return;
     }
-    const char* atomic_functions[] = {"sin(", "cos(", "tan(", "asin(", "acos(", "atan(", "Ans"};
+    const char* atomic_functions[] = {"sin(",
+                                      "cos(",
+                                      "tan(",
+                                      "asin(",
+                                      "acos(",
+                                      "atan(",
+                                      "abs(",
+                                      "round(",
+                                      "iPart(",
+                                      "fPart(",
+                                      "int(",
+                                      "min(",
+                                      "max(",
+                                      "lcm(",
+                                      "gcd(",
+                                      "remainder(",
+                                      "logBASE(",
+                                      "conj(",
+                                      "real(",
+                                      "imag(",
+                                      "angle(",
+                                      "randInt(",
+                                      "randNorm(",
+                                      "randBin(",
+                                      "randIntNoRep(",
+                                      "nPr(",
+                                      "nCr(",
+                                      "fMin(",
+                                      "fMax(",
+                                      "nDeriv(",
+                                      "fnInt(",
+                                      "sum(",
+                                      "piecewise(",
+                                      "Ans"};
     for (const char* name : atomic_functions) {
         const int name_len = static_cast<int>(std::strlen(name));
         if (cursor >= name_len && std::strncmp(buffer + cursor - name_len, name, name_len) == 0) {
@@ -1341,6 +1524,32 @@ bool insert_for_key(Key key, char* buffer, int& len, int& cursor) {
     return false;
 }
 
+void set_solver_value(int row, const char* text) {
+    if (row < 0 || row >= kSolverValueRows) {
+        return;
+    }
+    copy_string(g.solver_value[row], sizeof(g.solver_value[row]), text);
+    g.solver_value_len[row] = static_cast<int>(std::strlen(g.solver_value[row]));
+    g.solver_value_cursor[row] = g.solver_value_len[row];
+}
+
+void init_solver_fields() {
+    g.solver_variable = 'X';
+    set_solver_value(0, "-10");
+    set_solver_value(1, "10");
+    set_solver_value(2, "0");
+    g.solver_selection = 0;
+    g.solver_status[0] = '\0';
+}
+
+void open_solver() {
+    if (g.solver_variable < 'A' || g.solver_variable > 'Z') {
+        init_solver_fields();
+    }
+    g.solver_selection = 0;
+    g.screen = Screen::Solver;
+}
+
 void edit_expression_key(Key key, char* buffer, int& len, int& cursor) {
     if ((key == Key::Up || key == Key::Down) &&
         (move_fraction_vertical(buffer, len, cursor, key) || move_nth_root_vertical(buffer, len, cursor, key))) {
@@ -1372,6 +1581,226 @@ void edit_expression_key(Key key, char* buffer, int& len, int& cursor) {
             break;
     }
     normalize_cursor(buffer, len, cursor);
+}
+
+const MathMenuTab& current_math_tab() {
+    if (g.math_tab < 0) {
+        g.math_tab = 0;
+    }
+    if (g.math_tab >= kMathTabCount) {
+        g.math_tab = kMathTabCount - 1;
+    }
+    return kMathTabs[g.math_tab];
+}
+
+void ensure_math_selection_visible() {
+    const MathMenuTab& tab = current_math_tab();
+    if (g.math_row < 0) {
+        g.math_row = 0;
+    }
+    if (g.math_row >= tab.count) {
+        g.math_row = tab.count - 1;
+    }
+    if (g.math_first_row > g.math_row) {
+        g.math_first_row = g.math_row;
+    }
+    if (g.math_row >= g.math_first_row + kMathVisibleRows) {
+        g.math_first_row = g.math_row - kMathVisibleRows + 1;
+    }
+    if (g.math_first_row < 0) {
+        g.math_first_row = 0;
+    }
+    const int max_first = tab.count > kMathVisibleRows ? tab.count - kMathVisibleRows : 0;
+    if (g.math_first_row > max_first) {
+        g.math_first_row = max_first;
+    }
+}
+
+void open_math_menu() {
+    if (g.screen != Screen::MathMenu) {
+        g.math_return_screen = g.screen;
+        g.math_tab = 0;
+        g.math_row = 0;
+        g.math_first_row = 0;
+    }
+    g.zoom_pending = false;
+    g.screen = Screen::MathMenu;
+    ensure_math_selection_visible();
+}
+
+bool math_editor(char*& buffer, int*& len, int*& cursor, int*& scroll_x) {
+    if (g.math_return_screen == Screen::YEquals) {
+        buffer = g.y_expr[g.y_selection];
+        len = &g.y_len[g.y_selection];
+        cursor = &g.y_cursor[g.y_selection];
+        scroll_x = &g.y_expr_scroll_x[g.y_selection];
+        return true;
+    }
+    buffer = g.home_expr;
+    len = &g.home_len;
+    cursor = &g.home_cursor;
+    scroll_x = &g.home_expr_scroll_x;
+    return g.math_return_screen == Screen::Home;
+}
+
+void finish_math_insert(char* buffer, int& len, int& cursor, int& scroll_x) {
+    normalize_cursor(buffer, len, cursor);
+    ensure_cursor_visible(buffer, len, cursor, g.math_return_screen == Screen::YEquals ? kLcdWidth - 62 : kLcdWidth - 26, scroll_x);
+    g.screen = g.math_return_screen == Screen::YEquals ? Screen::YEquals : Screen::Home;
+    clear_history_selection();
+}
+
+void insert_mixed_fraction(char* buffer, int& len, int& cursor) {
+    if (insert_text(buffer, len, cursor, "()+()/()")) {
+        cursor -= 7;
+        if (cursor < 1) {
+            cursor = 1;
+        }
+    }
+}
+
+void select_math_item(const MathMenuItem& item) {
+    char* buffer = nullptr;
+    int* len = nullptr;
+    int* cursor = nullptr;
+    int* scroll_x = nullptr;
+    const bool editor_target = math_editor(buffer, len, cursor, scroll_x);
+
+    switch (item.action) {
+        case MathMenuAction::FracOutput:
+            g.fraction_output = true;
+            g.screen = editor_target ? g.math_return_screen : Screen::Home;
+            return;
+        case MathMenuAction::DecOutput:
+            g.fraction_output = false;
+            g.screen = editor_target ? g.math_return_screen : Screen::Home;
+            return;
+        case MathMenuAction::ToggleFracDecimal:
+            g.screen = Screen::Home;
+            toggle_fraction_decimal();
+            ensure_cursor_visible(g.home_expr, g.home_len, g.home_cursor, kLcdWidth - 26, g.home_expr_scroll_x);
+            return;
+        case MathMenuAction::OpenSolver:
+            open_solver();
+            return;
+        case MathMenuAction::NoOp:
+            g.screen = editor_target ? g.math_return_screen : Screen::Home;
+            return;
+        case MathMenuAction::InsertFunction:
+            insert_function_open_auto(buffer, *len, *cursor, item.text);
+            break;
+        case MathMenuAction::InsertRaw:
+            if (insert_text(buffer, *len, *cursor, item.text)) {
+                *cursor += item.cursor_delta;
+            }
+            break;
+        case MathMenuAction::InsertFraction:
+            insert_fraction(buffer, *len, *cursor);
+            break;
+        case MathMenuAction::InsertMixedFraction:
+            insert_mixed_fraction(buffer, *len, *cursor);
+            break;
+        case MathMenuAction::InsertNthRoot:
+            insert_nth_root(buffer, *len, *cursor);
+            break;
+        case MathMenuAction::InsertCubeRoot:
+            if (insert_text(buffer, *len, *cursor, "root(3)()")) {
+                --(*cursor);
+            }
+            break;
+        case MathMenuAction::InsertCube:
+            insert_power_value(buffer, *len, *cursor, "3");
+            break;
+    }
+
+    if (!editor_target) {
+        g.math_return_screen = Screen::Home;
+    }
+    finish_math_insert(buffer, *len, *cursor, *scroll_x);
+}
+
+char direct_key_label(Key key) {
+    switch (key) {
+        case Key::Digit0: return '0';
+        case Key::Digit1: return '1';
+        case Key::Digit2: return '2';
+        case Key::Digit3: return '3';
+        case Key::Digit4: return '4';
+        case Key::Digit5: return '5';
+        case Key::Digit6: return '6';
+        case Key::Digit7: return '7';
+        case Key::Digit8: return '8';
+        case Key::Digit9: return '9';
+        default: break;
+    }
+    const char letter = key_letter(key);
+    if (letter >= 'A' && letter <= 'D') {
+        return letter;
+    }
+    return '\0';
+}
+
+void select_math_direct(char direct) {
+    const MathMenuTab& tab = current_math_tab();
+    for (int i = 0; i < tab.count; ++i) {
+        if (tab.items[i].direct == direct) {
+            g.math_row = i;
+            ensure_math_selection_visible();
+            select_math_item(tab.items[i]);
+            return;
+        }
+    }
+}
+
+void handle_math_menu_key(Key key) {
+    if (key == Key::Clear) {
+        g.screen = g.math_return_screen == Screen::MathMenu ? Screen::Home : g.math_return_screen;
+        return;
+    }
+    if (key == Key::Left) {
+        if (g.math_tab > 0) {
+            --g.math_tab;
+            g.math_row = 0;
+            g.math_first_row = 0;
+        }
+        ensure_math_selection_visible();
+        return;
+    }
+    if (key == Key::Right) {
+        if (g.math_tab + 1 < kMathTabCount) {
+            ++g.math_tab;
+            g.math_row = 0;
+            g.math_first_row = 0;
+        }
+        ensure_math_selection_visible();
+        return;
+    }
+    if (key == Key::Up) {
+        if (g.math_row > 0) {
+            --g.math_row;
+        }
+        ensure_math_selection_visible();
+        return;
+    }
+    if (key == Key::Down) {
+        const MathMenuTab& tab = current_math_tab();
+        if (g.math_row + 1 < tab.count) {
+            ++g.math_row;
+        }
+        ensure_math_selection_visible();
+        return;
+    }
+    if (key == Key::Enter) {
+        const MathMenuTab& tab = current_math_tab();
+        if (g.math_row >= 0 && g.math_row < tab.count) {
+            select_math_item(tab.items[g.math_row]);
+        }
+        return;
+    }
+    const char direct = direct_key_label(key);
+    if (direct != '\0') {
+        select_math_direct(direct);
+    }
 }
 
 void pan_graph(CalcReal dx_fraction, CalcReal dy_fraction) {
@@ -1528,6 +1957,7 @@ void handle_global_key(Key key) {
         case Key::Mode: g.zoom_pending = false; g.screen = Screen::Settings; break;
         case Key::About: g.zoom_pending = false; g.screen = Screen::About; break;
         case Key::On: g.zoom_pending = false; g.screen = Screen::Home; break;
+        case Key::Math: open_math_menu(); break;
         default: break;
     }
 }
@@ -1818,6 +2248,301 @@ void handle_window_key(Key key) {
                 g.window_edit_cursor[g.window_selection] = before_cursor;
             }
             break;
+        }
+    }
+}
+
+int top_level_equal_pos(const char* expr) {
+    int depth = 0;
+    for (int i = 0; expr[i] != '\0'; ++i) {
+        if (is_open_paren(expr[i])) {
+            ++depth;
+        } else if (is_close_paren(expr[i]) && depth > 0) {
+            --depth;
+        } else if (depth == 0 && expr[i] == '=') {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool copy_solver_range(const char* expr, int start, int end, char* out, std::size_t out_size) {
+    if (out == nullptr || out_size == 0u || start < 0 || end < start) {
+        return false;
+    }
+    const int len = end - start;
+    if (len <= 0 || len >= static_cast<int>(out_size)) {
+        return false;
+    }
+    for (int i = 0; i < len; ++i) {
+        out[i] = expr[start + i];
+    }
+    out[len] = '\0';
+    return true;
+}
+
+bool evaluate_solver_expression(const char* expr, char variable, CalcReal x, CalcReal& value) {
+    EvalContext copy = g.eval;
+    const int idx = variable - 'A';
+    if (idx < 0 || idx >= 26) {
+        return false;
+    }
+    copy.variables[idx] = x;
+    copy.variable_imag[idx] = real(0.0);
+    copy.variable_valid[idx] = true;
+    EvalResult result = evaluate_expression(expr, copy);
+    if (!result.ok || std::fabs(result.imag) > real(0.000000001) || !std::isfinite(result.value)) {
+        return false;
+    }
+    value = result.value;
+    return true;
+}
+
+bool solver_residual(const char* expr, char variable, CalcReal x, CalcReal& value) {
+    const int eq = top_level_equal_pos(expr);
+    if (eq < 0) {
+        return evaluate_solver_expression(expr, variable, x, value);
+    }
+    char lhs[kExpressionCapacity]{};
+    char rhs[kExpressionCapacity]{};
+    const int len = static_cast<int>(std::strlen(expr));
+    if (!copy_solver_range(expr, 0, eq, lhs, sizeof(lhs)) ||
+        !copy_solver_range(expr, eq + 1, len, rhs, sizeof(rhs))) {
+        return false;
+    }
+    CalcReal lhs_value = real(0.0);
+    CalcReal rhs_value = real(0.0);
+    if (!evaluate_solver_expression(lhs, variable, x, lhs_value) ||
+        !evaluate_solver_expression(rhs, variable, x, rhs_value)) {
+        return false;
+    }
+    value = lhs_value - rhs_value;
+    return std::isfinite(value);
+}
+
+bool parse_solver_value(int row, CalcReal& value) {
+    if (row < 0 || row >= kSolverValueRows || g.solver_value_len[row] <= 0) {
+        value = row == 0 ? real(-10.0) : (row == 1 ? real(10.0) : real(0.0));
+        return true;
+    }
+    EvalContext copy = g.eval;
+    EvalResult result = evaluate_expression(g.solver_value[row], copy);
+    if (!result.ok || std::fabs(result.imag) > real(0.000000001) || !std::isfinite(result.value)) {
+        return false;
+    }
+    value = result.value;
+    return true;
+}
+
+bool bisect_solver_root(const char* expr, char variable, CalcReal lo, CalcReal hi, CalcReal flo, CalcReal fhi, CalcReal& root) {
+    if (std::fabs(flo) <= real(0.0000000001)) {
+        root = lo;
+        return true;
+    }
+    if (std::fabs(fhi) <= real(0.0000000001)) {
+        root = hi;
+        return true;
+    }
+    if ((flo < real(0.0) && fhi < real(0.0)) || (flo > real(0.0) && fhi > real(0.0))) {
+        return false;
+    }
+    for (int i = 0; i < 80; ++i) {
+        const CalcReal mid = (lo + hi) / real(2.0);
+        CalcReal fmid = real(0.0);
+        if (!solver_residual(expr, variable, mid, fmid)) {
+            return false;
+        }
+        if (std::fabs(fmid) <= real(0.0000000001) || std::fabs(hi - lo) <= real(0.0000000001)) {
+            root = mid;
+            return true;
+        }
+        if ((flo < real(0.0) && fmid > real(0.0)) || (flo > real(0.0) && fmid < real(0.0))) {
+            hi = mid;
+            fhi = fmid;
+        } else {
+            lo = mid;
+            flo = fmid;
+        }
+    }
+    (void)fhi;
+    root = (lo + hi) / real(2.0);
+    return true;
+}
+
+void run_solver() {
+    char expr[kExpressionCapacity]{};
+    sanitize_expression(g.solver_expr, expr, sizeof(expr));
+    if (expr[0] == '\0') {
+        copy_string(g.solver_status, sizeof(g.solver_status), "NO EQUATION");
+        return;
+    }
+    CalcReal lo = real(-10.0);
+    CalcReal hi = real(10.0);
+    CalcReal guess = real(0.0);
+    if (!parse_solver_value(0, lo) || !parse_solver_value(1, hi) || !parse_solver_value(2, guess)) {
+        copy_string(g.solver_status, sizeof(g.solver_status), "BAD BOUND");
+        return;
+    }
+    if (hi < lo) {
+        const CalcReal tmp = hi;
+        hi = lo;
+        lo = tmp;
+    }
+    if (hi == lo) {
+        copy_string(g.solver_status, sizeof(g.solver_status), "BAD BOUND");
+        return;
+    }
+    const char variable = (g.solver_variable >= 'A' && g.solver_variable <= 'Z') ? g.solver_variable : 'X';
+
+    constexpr int samples = 64;
+    CalcReal prev_x = lo;
+    CalcReal prev_f = real(0.0);
+    bool have_prev = solver_residual(expr, variable, prev_x, prev_f);
+    CalcReal best_x = prev_x;
+    CalcReal best_abs = have_prev ? std::fabs(prev_f) : real(1.0e30);
+    bool found = false;
+    CalcReal root = guess;
+    for (int i = 1; i <= samples; ++i) {
+        const CalcReal x = lo + (hi - lo) * static_cast<CalcReal>(i) / static_cast<CalcReal>(samples);
+        CalcReal f = real(0.0);
+        const bool ok = solver_residual(expr, variable, x, f);
+        if (ok && std::fabs(f) < best_abs) {
+            best_abs = std::fabs(f);
+            best_x = x;
+        }
+        if (ok && have_prev && ((prev_f <= real(0.0) && f >= real(0.0)) || (prev_f >= real(0.0) && f <= real(0.0)))) {
+            found = bisect_solver_root(expr, variable, prev_x, x, prev_f, f, root);
+            break;
+        }
+        if (ok) {
+            prev_x = x;
+            prev_f = f;
+            have_prev = true;
+        }
+    }
+    if (!found) {
+        CalcReal x0 = best_x;
+        CalcReal x1 = guess;
+        if (x1 < lo || x1 > hi || x1 == x0) {
+            x1 = best_x + (hi - lo) / real(100.0);
+            if (x1 > hi) {
+                x1 = best_x - (hi - lo) / real(100.0);
+            }
+        }
+        CalcReal f0 = real(0.0);
+        CalcReal f1 = real(0.0);
+        if (solver_residual(expr, variable, x0, f0) && solver_residual(expr, variable, x1, f1)) {
+            for (int i = 0; i < 40; ++i) {
+                const CalcReal denom = f1 - f0;
+                if (std::fabs(denom) <= real(0.000000000001)) {
+                    break;
+                }
+                CalcReal x2 = x1 - f1 * (x1 - x0) / denom;
+                if (x2 < lo || x2 > hi || !std::isfinite(x2)) {
+                    x2 = (x0 + x1) / real(2.0);
+                }
+                CalcReal f2 = real(0.0);
+                if (!solver_residual(expr, variable, x2, f2)) {
+                    break;
+                }
+                x0 = x1;
+                f0 = f1;
+                x1 = x2;
+                f1 = f2;
+                if (std::fabs(f1) <= real(0.00000001)) {
+                    root = x1;
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (!found && best_abs <= real(0.000001)) {
+        root = best_x;
+        found = true;
+    }
+    if (!found) {
+        copy_string(g.solver_status, sizeof(g.solver_status), "NO SIGN CHANGE");
+        return;
+    }
+
+    const int idx = variable - 'A';
+    g.eval.variables[idx] = root;
+    g.eval.variable_imag[idx] = real(0.0);
+    g.eval.variable_valid[idx] = true;
+    g.eval.ans = root;
+    g.eval.ans_imag = real(0.0);
+    char value[24]{};
+    format_value(root, value, sizeof(value));
+    g.solver_status[0] = variable;
+    g.solver_status[1] = '=';
+    g.solver_status[2] = '\0';
+    std::size_t pos = 2;
+    append_string(g.solver_status, sizeof(g.solver_status), pos, value);
+}
+
+void handle_solver_key(Key key) {
+    if (key == Key::Clear) {
+        g.screen = Screen::Home;
+        return;
+    }
+    if (key == Key::Up) {
+        if (g.solver_selection > 0) {
+            --g.solver_selection;
+        }
+        return;
+    }
+    if (key == Key::Down) {
+        if (g.solver_selection < 4) {
+            ++g.solver_selection;
+        }
+        return;
+    }
+    if (key == Key::Enter) {
+        run_solver();
+        return;
+    }
+    if (g.solver_selection == 0) {
+        edit_expression_key(key, g.solver_expr, g.solver_len, g.solver_cursor);
+        ensure_cursor_visible(g.solver_expr, g.solver_len, g.solver_cursor, kLcdWidth - 58, g.solver_scroll_x);
+        return;
+    }
+    if (g.solver_selection == 1) {
+        const char letter = key_letter(key);
+        if (letter >= 'A' && letter <= 'Z') {
+            g.solver_variable = letter;
+        }
+        return;
+    }
+    const int value_row = g.solver_selection - 2;
+    if (value_row >= 0 && value_row < kSolverValueRows) {
+        if (key == Key::Delete || key == Key::Back) {
+            if (g.solver_value_cursor[value_row] > 0) {
+                delete_range(g.solver_value[value_row],
+                             g.solver_value_len[value_row],
+                             g.solver_value_cursor[value_row] - 1,
+                             1);
+                --g.solver_value_cursor[value_row];
+            }
+            return;
+        }
+        if (key == Key::Left) {
+            if (g.solver_value_cursor[value_row] > 0) {
+                --g.solver_value_cursor[value_row];
+            }
+            return;
+        }
+        if (key == Key::Right) {
+            if (g.solver_value_cursor[value_row] < g.solver_value_len[value_row]) {
+                ++g.solver_value_cursor[value_row];
+            }
+            return;
+        }
+        if (insert_window_value_key(key,
+                                    g.solver_value[value_row],
+                                    g.solver_value_len[value_row],
+                                    g.solver_value_cursor[value_row])) {
+            return;
         }
     }
 }
@@ -2333,6 +3058,18 @@ const char* atomic_text_label_at(const char* expr, int start, int end, int& sour
     return nullptr;
 }
 
+const char* atomic_function_label_at(const char* expr, int start, int end, int& source_end) {
+    source_end = start;
+    for (const AtomicRenderPrefix& prefix : kAtomicRenderPrefixes) {
+        const int len = static_cast<int>(std::strlen(prefix.source));
+        if (start + len <= end && std::strncmp(expr + start, prefix.source, len) == 0) {
+            source_end = start + len;
+            return prefix.label;
+        }
+    }
+    return nullptr;
+}
+
 void exponent_range(const char* expr, int caret, int end, int& visual_start, int& visual_end, int& source_end) {
     visual_start = caret + 1;
     visual_end = visual_start;
@@ -2471,6 +3208,22 @@ ExprBox measure_expression_range_impl(const char* expr, int start, int end, bool
                 descent = box.descent;
             }
             i = atomic_source_end;
+            continue;
+        }
+        int function_source_end = 0;
+        const char* function_label = atomic_function_label_at(expr, i, end, function_source_end);
+        if (function_label != nullptr) {
+            const int label_len = static_cast<int>(std::strlen(function_label));
+            const ExprBox box = box_from_ascent(label_len * font_w(small), font_ascent(small), font_descent(small));
+            add_node(layout, LayoutKind::TextRun, i, function_source_end, small, box);
+            w += box.w;
+            if (box.ascent > ascent) {
+                ascent = box.ascent;
+            }
+            if (box.descent > descent) {
+                descent = box.descent;
+            }
+            i = function_source_end;
             continue;
         }
         if (i + 5 <= end && starts_with_at(expr, i, "sqrt(")) {
@@ -2627,6 +3380,14 @@ void draw_expression_range_impl(Display& display, int x, int baseline, const cha
             i = atomic_source_end;
             continue;
         }
+        int function_source_end = 0;
+        const char* function_label = atomic_function_label_at(expr, i, end, function_source_end);
+        if (function_label != nullptr) {
+            draw_text_scaled(display, cx, baseline - font_ascent(small), function_label, small ? 1 : kTextScale, fg, bg);
+            cx += static_cast<int>(std::strlen(function_label)) * font_w(small);
+            i = function_source_end;
+            continue;
+        }
         if (i + 5 <= end && starts_with_at(expr, i, "sqrt(")) {
             const int close = matching_paren(expr, i + 4, end);
             const int inner_start = i + 5;
@@ -2747,6 +3508,15 @@ void emit_anchors_range(LayoutContext& layout, int x, int baseline, const char* 
             add_anchor(&layout, i, cx, baseline, font_h(small), region);
             cx += 3 * font_w(small);
             i = atomic_source_end;
+            add_anchor(&layout, i, cx, baseline, font_h(small), region);
+            continue;
+        }
+        int function_source_end = 0;
+        const char* function_label = atomic_function_label_at(expr, i, end, function_source_end);
+        if (function_label != nullptr) {
+            add_anchor(&layout, i, cx, baseline, font_h(small), region);
+            cx += static_cast<int>(std::strlen(function_label)) * font_w(small);
+            i = function_source_end;
             add_anchor(&layout, i, cx, baseline, font_h(small), region);
             continue;
         }
@@ -4327,6 +5097,78 @@ void render_table(Display& display) {
     }
 }
 
+void render_math_menu(Display& display) {
+    clear(display, kWhite);
+    title(display, "MATH");
+    const int tab_y = kTitleH;
+    const int tab_h = 16;
+    const int tab_w = kLcdWidth / kMathTabCount;
+    for (int i = 0; i < kMathTabCount; ++i) {
+        const int x = i * tab_w;
+        const bool active = i == g.math_tab;
+        fill_rect(display, x, tab_y, tab_w, tab_h, active ? kBlue : kLightGray);
+        draw_rect(display, x, tab_y, tab_w, tab_h, kGray);
+        draw_text_scaled(display, x + 4, tab_y + 3, kMathTabs[i].title, 1, active ? kWhite : kBlack, active ? kBlue : kLightGray);
+    }
+
+    ensure_math_selection_visible();
+    const MathMenuTab& tab = current_math_tab();
+    const int row_h = 16;
+    const int list_y = tab_y + tab_h + 2;
+    for (int row = 0; row < kMathVisibleRows; ++row) {
+        const int item_index = g.math_first_row + row;
+        if (item_index >= tab.count) {
+            break;
+        }
+        const MathMenuItem& item = tab.items[item_index];
+        const int y = list_y + row * row_h;
+        const bool selected = item_index == g.math_row;
+        const Color bg = selected ? kBlue : kWhite;
+        const Color fg = selected ? kWhite : kBlack;
+        fill_rect(display, 0, y, kLcdWidth, row_h, bg);
+        char direct[3] = {item.direct, ':', '\0'};
+        draw_text_scaled(display, 8, y + 1, direct, kTextScale, fg, bg);
+        draw_text_scaled(display, 36, y + 1, item.label, kTextScale, fg, bg);
+    }
+    if (g.math_first_row > 0) {
+        draw_text_scaled(display, kLcdWidth - 12, list_y, "^", 1, kBlack, kWhite);
+    }
+    if (g.math_first_row + kMathVisibleRows < tab.count) {
+        draw_text_scaled(display, kLcdWidth - 12, kLcdHeight - 12, "v", 1, kBlack, kWhite);
+    }
+}
+
+void render_solver(Display& display) {
+    clear(display, kWhite);
+    title(display, "SOLVER");
+    const int row_y[5] = {24, 62, 84, 106, 128};
+    const char* labels[5] = {"EQ=", "VAR=", "LOW=", "HIGH=", "GUESS="};
+    for (int row = 0; row < 5; ++row) {
+        const bool selected = g.solver_selection == row;
+        const Color bg = selected ? kLightGray : kWhite;
+        fill_rect(display, 0, row_y[row] - 2, kLcdWidth, row == 0 ? 34 : 18, bg);
+        draw_text_scaled(display, 8, row_y[row], labels[row], kTextScale, kBlack, bg);
+        if (row == 0) {
+            const int expr_x = 52 - g.solver_scroll_x;
+            draw_expression(display, expr_x, row_y[row] - 2, g.solver_expr, selected ? g.solver_cursor : -1, kBlack, bg);
+        } else if (row == 1) {
+            char text[2] = {g.solver_variable, '\0'};
+            draw_text_scaled(display, 68, row_y[row], text, kTextScale, kBlack, bg);
+        } else {
+            const int value_row = row - 2;
+            draw_text_scaled(display, 92, row_y[row], g.solver_value[value_row], kTextScale, kBlack, bg);
+            if (selected && g.cursor_on) {
+                const int cx = 92 + g.solver_value_cursor[value_row] * kTextW;
+                draw_line(display, cx, row_y[row], cx, row_y[row] + kTextH, kBlack);
+            }
+        }
+    }
+    if (g.solver_status[0] != '\0') {
+        draw_text_scaled(display, 8, 166, g.solver_status, kTextScale, kBlue, kWhite);
+    }
+    draw_text_scaled(display, 8, 210, "ENTER SOLVES", kTextScale, kBlue, kWhite);
+}
+
 void render_settings(Display& display) {
     clear(display, kWhite);
     title(display, "SETTINGS");
@@ -4393,6 +5235,11 @@ void calc_init(Platform& platform) {
     g.settings_selection = 0;
     g.zoom_pending = false;
     g.fraction_output = false;
+    g.math_return_screen = Screen::Home;
+    g.math_tab = 0;
+    g.math_row = 0;
+    g.math_first_row = 0;
+    init_solver_fields();
     g.last_tick_ms = millis();
 }
 
@@ -4418,6 +5265,8 @@ void calc_key_down(Key key) {
         case Screen::Window: handle_window_key(key); break;
         case Screen::Table: handle_table_key(key); break;
         case Screen::Settings: handle_settings_key(key); break;
+        case Screen::MathMenu: handle_math_menu_key(key); break;
+        case Screen::Solver: handle_solver_key(key); break;
         case Screen::About:
             if (key == Key::Enter || key == Key::Clear) {
                 g.screen = Screen::Home;
@@ -4440,6 +5289,8 @@ void calc_render() {
         case Screen::Window: render_window(display); break;
         case Screen::Table: render_table(display); break;
         case Screen::Settings: render_settings(display); break;
+        case Screen::MathMenu: render_math_menu(display); break;
+        case Screen::Solver: render_solver(display); break;
         case Screen::About: render_about(display); break;
     }
 }

@@ -100,6 +100,37 @@ int main() {
     result = calc::evaluate_expression("root(3)(8)", context);
     check(result.ok && nearly(result.value, 2.0) && nearly(result.imag, 0.0), "nth root evaluation");
 
+    result = calc::evaluate_expression("abs(3+4i)", context);
+    check(result.ok && nearly(result.value, 5.0), "complex abs function");
+    result = calc::evaluate_expression("real(2+3i)+imag(2+3i)", context);
+    check(result.ok && nearly(result.value, 5.0), "complex real and imag functions");
+    result = calc::evaluate_expression("conj(2+3i)", context);
+    check(result.ok && nearly(result.value, 2.0) && nearly(result.imag, -3.0), "complex conjugate function");
+    result = calc::evaluate_expression("round(1.234,2)", context);
+    check(result.ok && nearly(result.value, 1.23), "round with digits");
+    result = calc::evaluate_expression("iPart(-1.7)+fPart(1.25)+int(-1.2)", context);
+    check(result.ok && nearly(result.value, -2.75), "numeric part functions");
+    result = calc::evaluate_expression("min(3,2,5)+max(3,2,5)", context);
+    check(result.ok && nearly(result.value, 7.0), "min max multi argument functions");
+    result = calc::evaluate_expression("gcd(24,18)+lcm(4,6)+remainder(17,5)", context);
+    check(result.ok && nearly(result.value, 20.0), "integer numeric functions");
+    result = calc::evaluate_expression("logBASE(8,2)", context);
+    check(result.ok && nearly(result.value, 3.0), "log base function");
+    result = calc::evaluate_expression("5!+nPr(5,2)+nCr(5,2)", context);
+    check(result.ok && nearly(result.value, 150.0), "probability operators and functions");
+    result = calc::evaluate_expression("randInt(4,4)", context);
+    check(result.ok && nearly(result.value, 4.0), "deterministic randInt degenerate range");
+    result = calc::evaluate_expression("nDeriv(X^2,X,3)", context);
+    check(result.ok && nearly(result.value, 6.0, 1e-4), "numeric derivative function");
+    result = calc::evaluate_expression("fnInt(X,X,0,1)", context);
+    check(result.ok && nearly(result.value, 0.5, 1e-4), "numeric integral function");
+    result = calc::evaluate_expression("sum(X,X,1,4)", context);
+    check(result.ok && nearly(result.value, 10.0), "summation function");
+    result = calc::evaluate_expression("fMin((X-2)^2,X,-5,5)", context);
+    check(result.ok && nearly(result.value, 2.0, 1e-4), "fMin returns minimizing x");
+    result = calc::evaluate_expression("fMax(0-(X-1)^2,X,-5,5)", context);
+    check(result.ok && nearly(result.value, 1.0, 1e-4), "fMax returns maximizing x");
+
     result = calc::evaluate_expression_with_x("X^2", context, 3.0);
     check(result.ok && nearly(result.value, 9.0), "x override");
     const calc::CalcReal ans_before_readonly = context.ans;
@@ -134,6 +165,50 @@ int main() {
     platform.clock = {&clock, clock_millis};
     calc::calc_init(platform);
     check(calc::calc_screen() == calc::Screen::Home, "initial screen");
+
+    press(calc::Key::Math);
+    check(calc::calc_screen() == calc::Screen::MathMenu, "math key opens math menu");
+    calc::calc_render();
+    int math_menu_nonwhite = 0;
+    for (calc::Color pixel : pixels) {
+        if (pixel != 0xffff) {
+            ++math_menu_nonwhite;
+        }
+    }
+    check(math_menu_nonwhite > 1000, "math menu render non-empty");
+    press(calc::Key::Digit5);
+    check(calc::calc_screen() == calc::Screen::Home &&
+              std::strcmp(calc::calc_debug_home_expression(), "root()()") == 0 &&
+              calc::calc_debug_home_cursor() == 5,
+          "math menu direct number inserts nth root");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::Math);
+    press(calc::Key::Right);
+    press(calc::Key::Digit1);
+    check(std::strcmp(calc::calc_debug_home_expression(), "abs()") == 0 && calc::calc_debug_home_cursor() == 4,
+          "math num tab direct selection inserts function");
+
+    calc::calc_debug_set_home_expression("", 0);
+    press(calc::Key::Math);
+    press(calc::Key::Right);
+    press(calc::Key::LetterD);
+    check(std::strcmp(calc::calc_debug_home_expression(), "()/()") == 0 && calc::calc_debug_home_cursor() == 1,
+          "math num tab letter selection inserts fraction template");
+
+    press(calc::Key::Math);
+    press(calc::Key::LetterC);
+    check(calc::calc_screen() == calc::Screen::Solver, "math numeric solver opens solver screen");
+    calc::calc_render();
+    int solver_nonwhite = 0;
+    for (calc::Color pixel : pixels) {
+        if (pixel != 0xffff) {
+            ++solver_nonwhite;
+        }
+    }
+    check(solver_nonwhite > 1000, "solver render non-empty");
+    press(calc::Key::Clear);
+    check(calc::calc_screen() == calc::Screen::Home, "clear exits solver");
 
     press(calc::Key::Second);
     press(calc::Key::Fraction);

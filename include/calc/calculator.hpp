@@ -120,7 +120,9 @@ enum class Screen : std::uint8_t {
     Window,
     Settings,
     About,
-    Table
+    Table,
+    MathMenu,
+    Solver
 };
 
 struct Display {
@@ -186,6 +188,7 @@ struct EvalContext {
     CalcReal ans;
     CalcReal ans_imag;
     bool degree_mode;
+    std::uint32_t rng_state;
 };
 
 struct EvalResult {

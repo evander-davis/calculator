@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace calc {
@@ -36,7 +37,30 @@ enum class Function : std::uint8_t {
     ATan,
     Sqrt,
     Log,
-    Ln
+    Ln,
+    Abs,
+    Round,
+    IPart,
+    FPart,
+    Int,
+    Min,
+    Max,
+    Lcm,
+    Gcd,
+    Remainder,
+    LogBase,
+    Conj,
+    Real,
+    Imag,
+    Angle,
+    Rand,
+    RandInt,
+    RandNorm,
+    RandBin,
+    RandIntNoRep,
+    NPr,
+    NCr,
+    Factorial
 };
 
 struct Token {
@@ -46,6 +70,7 @@ struct Token {
     char op;
     char variable;
     Function function;
+    int arity;
     int pos;
 };
 
@@ -188,6 +213,94 @@ bool parse_function(const char* name, int len, Function& function) {
     }
     if (same_word(name, len, "ln")) {
         function = Function::Ln;
+        return true;
+    }
+    if (same_word(name, len, "abs")) {
+        function = Function::Abs;
+        return true;
+    }
+    if (same_word(name, len, "round")) {
+        function = Function::Round;
+        return true;
+    }
+    if (same_word(name, len, "ipart")) {
+        function = Function::IPart;
+        return true;
+    }
+    if (same_word(name, len, "fpart")) {
+        function = Function::FPart;
+        return true;
+    }
+    if (same_word(name, len, "int")) {
+        function = Function::Int;
+        return true;
+    }
+    if (same_word(name, len, "min")) {
+        function = Function::Min;
+        return true;
+    }
+    if (same_word(name, len, "max")) {
+        function = Function::Max;
+        return true;
+    }
+    if (same_word(name, len, "lcm")) {
+        function = Function::Lcm;
+        return true;
+    }
+    if (same_word(name, len, "gcd")) {
+        function = Function::Gcd;
+        return true;
+    }
+    if (same_word(name, len, "remainder")) {
+        function = Function::Remainder;
+        return true;
+    }
+    if (same_word(name, len, "logbase")) {
+        function = Function::LogBase;
+        return true;
+    }
+    if (same_word(name, len, "conj")) {
+        function = Function::Conj;
+        return true;
+    }
+    if (same_word(name, len, "real")) {
+        function = Function::Real;
+        return true;
+    }
+    if (same_word(name, len, "imag")) {
+        function = Function::Imag;
+        return true;
+    }
+    if (same_word(name, len, "angle")) {
+        function = Function::Angle;
+        return true;
+    }
+    if (same_word(name, len, "rand")) {
+        function = Function::Rand;
+        return true;
+    }
+    if (same_word(name, len, "randint")) {
+        function = Function::RandInt;
+        return true;
+    }
+    if (same_word(name, len, "randnorm")) {
+        function = Function::RandNorm;
+        return true;
+    }
+    if (same_word(name, len, "randbin")) {
+        function = Function::RandBin;
+        return true;
+    }
+    if (same_word(name, len, "randintnorep")) {
+        function = Function::RandIntNoRep;
+        return true;
+    }
+    if (same_word(name, len, "npr")) {
+        function = Function::NPr;
+        return true;
+    }
+    if (same_word(name, len, "ncr")) {
+        function = Function::NCr;
         return true;
     }
     return false;
@@ -352,6 +465,12 @@ EvalResult ok(ComplexValue value) {
     return result;
 }
 
+EvalResult evaluate_impl(const char* expression,
+                         EvalContext& context,
+                         char override_variable,
+                         CalcReal override_value,
+                         bool update_ans);
+
 ComplexValue make_complex(CalcReal real_part, CalcReal imag_part) {
     return {real_part, imag_part};
 }
@@ -493,6 +612,478 @@ CalcReal pow_fast(CalcReal lhs, CalcReal rhs) {
     return std::pow(lhs, rhs);
 }
 
+bool near_zero(CalcReal value) {
+    return std::fabs(value) <= real(0.000000000001);
+}
+
+bool scalar_value(ComplexValue value, CalcReal& out) {
+    if (!near_zero(value.imag)) {
+        return false;
+    }
+    out = value.real;
+    return true;
+}
+
+bool integer_value(ComplexValue value, int& out) {
+    CalcReal scalar = real(0.0);
+    return scalar_value(value, scalar) && is_near_integer(scalar, out);
+}
+
+int abs_int(int value) {
+    return value < 0 ? -value : value;
+}
+
+int gcd_int(int lhs, int rhs) {
+    lhs = abs_int(lhs);
+    rhs = abs_int(rhs);
+    while (rhs != 0) {
+        const int rem = lhs % rhs;
+        lhs = rhs;
+        rhs = rem;
+    }
+    return lhs;
+}
+
+bool valid_arity(Function function, int arity) {
+    switch (function) {
+        case Function::Sin:
+        case Function::Cos:
+        case Function::Tan:
+        case Function::ASin:
+        case Function::ACos:
+        case Function::ATan:
+        case Function::Sqrt:
+        case Function::Log:
+        case Function::Ln:
+        case Function::Abs:
+        case Function::IPart:
+        case Function::FPart:
+        case Function::Int:
+        case Function::Conj:
+        case Function::Real:
+        case Function::Imag:
+        case Function::Angle:
+        case Function::Factorial:
+            return arity == 1;
+        case Function::Round:
+            return arity == 1 || arity == 2;
+        case Function::Min:
+        case Function::Max:
+            return arity >= 1;
+        case Function::Lcm:
+        case Function::Gcd:
+        case Function::Remainder:
+        case Function::LogBase:
+        case Function::RandInt:
+        case Function::RandNorm:
+        case Function::NPr:
+        case Function::NCr:
+            return arity == 2;
+        case Function::Rand:
+            return arity == 0;
+        case Function::RandBin:
+            return arity == 2 || arity == 3;
+        case Function::RandIntNoRep:
+            return arity == 2;
+    }
+    return false;
+}
+
+std::uint32_t next_random_u32(EvalContext& context) {
+    if (context.rng_state == 0u) {
+        context.rng_state = 0x1234abcdU;
+    }
+    context.rng_state = context.rng_state * 1664525u + 1013904223u;
+    return context.rng_state;
+}
+
+CalcReal random_unit(EvalContext& context) {
+    return static_cast<CalcReal>((next_random_u32(context) >> 8) & 0x00ffffffu) / real(16777216.0);
+}
+
+CalcReal factorial_value(int n) {
+    CalcReal result = real(1.0);
+    for (int i = 2; i <= n; ++i) {
+        result *= static_cast<CalcReal>(i);
+    }
+    return result;
+}
+
+bool permutation_value(int n, int r, CalcReal& out) {
+    if (n < 0 || r < 0 || r > n) {
+        return false;
+    }
+    out = real(1.0);
+    for (int i = 0; i < r; ++i) {
+        out *= static_cast<CalcReal>(n - i);
+    }
+    return std::isfinite(out);
+}
+
+bool combination_value(int n, int r, CalcReal& out) {
+    if (n < 0 || r < 0 || r > n) {
+        return false;
+    }
+    if (r > n - r) {
+        r = n - r;
+    }
+    out = real(1.0);
+    for (int i = 1; i <= r; ++i) {
+        out = out * static_cast<CalcReal>(n - r + i) / static_cast<CalcReal>(i);
+    }
+    return std::isfinite(out);
+}
+
+enum class SpecialFunction : std::uint8_t {
+    None,
+    FMin,
+    FMax,
+    NDeriv,
+    FnInt,
+    Sum
+};
+
+struct ArgRange {
+    int start;
+    int end;
+};
+
+bool same_word_at(const char* text, int pos, const char* word) {
+    for (int i = 0; word[i] != '\0'; ++i) {
+        if (std::tolower(static_cast<unsigned char>(text[pos + i])) != word[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+SpecialFunction special_function_at(const char* expr, int pos, int end, int& name_len) {
+    struct SpecialName {
+        const char* name;
+        SpecialFunction function;
+    };
+    constexpr SpecialName names[] = {
+        {"fmin", SpecialFunction::FMin},
+        {"fmax", SpecialFunction::FMax},
+        {"nderiv", SpecialFunction::NDeriv},
+        {"fnint", SpecialFunction::FnInt},
+        {"sum", SpecialFunction::Sum},
+    };
+    for (const SpecialName& entry : names) {
+        const int len = static_cast<int>(std::strlen(entry.name));
+        if (pos + len < end && same_word_at(expr, pos, entry.name) && is_open_paren(expr[pos + len])) {
+            name_len = len;
+            return entry.function;
+        }
+    }
+    name_len = 0;
+    return SpecialFunction::None;
+}
+
+bool split_args(const char* expr, int start, int end, ArgRange* args, int max_args, int& count) {
+    count = 0;
+    int depth = 0;
+    int arg_start = start;
+    for (int i = start; i <= end; ++i) {
+        const bool at_end = i == end;
+        const char ch = at_end ? ',' : expr[i];
+        if (!at_end && is_open_paren(ch)) {
+            ++depth;
+        } else if (!at_end && is_close_paren(ch)) {
+            if (depth <= 0) {
+                return false;
+            }
+            --depth;
+        } else if ((at_end || ch == ',') && depth == 0) {
+            if (count >= max_args) {
+                return false;
+            }
+            int arg_end = i;
+            while (arg_start < arg_end && std::isspace(static_cast<unsigned char>(expr[arg_start]))) {
+                ++arg_start;
+            }
+            while (arg_end > arg_start && std::isspace(static_cast<unsigned char>(expr[arg_end - 1]))) {
+                --arg_end;
+            }
+            if (arg_start == arg_end) {
+                return false;
+            }
+            args[count++] = {arg_start, arg_end};
+            arg_start = i + 1;
+        }
+    }
+    return depth == 0;
+}
+
+bool copy_range(const char* expr, ArgRange range, char* out, int cap) {
+    const int len = range.end - range.start;
+    if (len <= 0 || len >= cap) {
+        return false;
+    }
+    for (int i = 0; i < len; ++i) {
+        out[i] = expr[range.start + i];
+    }
+    out[len] = '\0';
+    return true;
+}
+
+bool parse_variable_arg(const char* expr, ArgRange range, char& variable) {
+    int pos = range.start;
+    while (pos < range.end && std::isspace(static_cast<unsigned char>(expr[pos]))) {
+        ++pos;
+    }
+    if (pos >= range.end || !std::isalpha(static_cast<unsigned char>(expr[pos]))) {
+        return false;
+    }
+    variable = static_cast<char>(std::toupper(static_cast<unsigned char>(expr[pos])));
+    ++pos;
+    while (pos < range.end && std::isspace(static_cast<unsigned char>(expr[pos]))) {
+        ++pos;
+    }
+    return pos == range.end && variable >= 'A' && variable <= 'Z';
+}
+
+bool evaluate_real_range(const char* expr,
+                         ArgRange range,
+                         EvalContext& context,
+                         char override_variable,
+                         CalcReal override_value,
+                         CalcReal& out) {
+    char buffer[kExpressionCapacity]{};
+    if (!copy_range(expr, range, buffer, kExpressionCapacity)) {
+        return false;
+    }
+    EvalResult result = evaluate_impl(buffer, context, override_variable, override_value, false);
+    if (!result.ok || !near_zero(result.imag)) {
+        return false;
+    }
+    out = result.value;
+    return std::isfinite(out);
+}
+
+bool evaluate_real_expression_at(const char* expr,
+                                 ArgRange range,
+                                 EvalContext& context,
+                                 char variable,
+                                 CalcReal x,
+                                 CalcReal& out) {
+    char buffer[kExpressionCapacity]{};
+    if (!copy_range(expr, range, buffer, kExpressionCapacity)) {
+        return false;
+    }
+    EvalResult result = evaluate_impl(buffer, context, variable, x, false);
+    if (!result.ok || !near_zero(result.imag)) {
+        return false;
+    }
+    out = result.value;
+    return std::isfinite(out);
+}
+
+bool compute_special_function(const char* expr,
+                              SpecialFunction function,
+                              const ArgRange* args,
+                              int arg_count,
+                              EvalContext& context,
+                              char override_variable,
+                              CalcReal override_value,
+                              CalcReal& out) {
+    if (function == SpecialFunction::NDeriv) {
+        if (arg_count != 3) {
+            return false;
+        }
+        char variable = '\0';
+        CalcReal x = real(0.0);
+        if (!parse_variable_arg(expr, args[1], variable) ||
+            !evaluate_real_range(expr, args[2], context, override_variable, override_value, x)) {
+            return false;
+        }
+        CalcReal h = std::fabs(x) * real(0.00001);
+        if (h < real(0.00001)) {
+            h = real(0.00001);
+        }
+        CalcReal lhs = real(0.0);
+        CalcReal rhs = real(0.0);
+        if (!evaluate_real_expression_at(expr, args[0], context, variable, x - h, lhs) ||
+            !evaluate_real_expression_at(expr, args[0], context, variable, x + h, rhs)) {
+            return false;
+        }
+        out = (rhs - lhs) / (real(2.0) * h);
+        return std::isfinite(out);
+    }
+
+    if (function == SpecialFunction::FnInt) {
+        if (arg_count != 4) {
+            return false;
+        }
+        char variable = '\0';
+        CalcReal lo = real(0.0);
+        CalcReal hi = real(0.0);
+        if (!parse_variable_arg(expr, args[1], variable) ||
+            !evaluate_real_range(expr, args[2], context, override_variable, override_value, lo) ||
+            !evaluate_real_range(expr, args[3], context, override_variable, override_value, hi)) {
+            return false;
+        }
+        constexpr int steps = 128;
+        const CalcReal dx = (hi - lo) / static_cast<CalcReal>(steps);
+        CalcReal total = real(0.0);
+        for (int i = 0; i <= steps; ++i) {
+            CalcReal y = real(0.0);
+            if (!evaluate_real_expression_at(expr, args[0], context, variable, lo + dx * static_cast<CalcReal>(i), y)) {
+                return false;
+            }
+            total += (i == 0 || i == steps) ? y : y * real(2.0);
+        }
+        out = total * dx / real(2.0);
+        return std::isfinite(out);
+    }
+
+    if (function == SpecialFunction::FMin || function == SpecialFunction::FMax) {
+        if (arg_count != 4) {
+            return false;
+        }
+        char variable = '\0';
+        CalcReal lo = real(0.0);
+        CalcReal hi = real(0.0);
+        if (!parse_variable_arg(expr, args[1], variable) ||
+            !evaluate_real_range(expr, args[2], context, override_variable, override_value, lo) ||
+            !evaluate_real_range(expr, args[3], context, override_variable, override_value, hi) ||
+            !(hi > lo)) {
+            return false;
+        }
+        const CalcReal inv_phi = real(0.6180339887498948482);
+        CalcReal c = hi - (hi - lo) * inv_phi;
+        CalcReal d = lo + (hi - lo) * inv_phi;
+        CalcReal fc = real(0.0);
+        CalcReal fd = real(0.0);
+        if (!evaluate_real_expression_at(expr, args[0], context, variable, c, fc) ||
+            !evaluate_real_expression_at(expr, args[0], context, variable, d, fd)) {
+            return false;
+        }
+        for (int i = 0; i < 64; ++i) {
+            const bool choose_left = function == SpecialFunction::FMin ? fc < fd : fc > fd;
+            if (choose_left) {
+                hi = d;
+                d = c;
+                fd = fc;
+                c = hi - (hi - lo) * inv_phi;
+                if (!evaluate_real_expression_at(expr, args[0], context, variable, c, fc)) {
+                    return false;
+                }
+            } else {
+                lo = c;
+                c = d;
+                fc = fd;
+                d = lo + (hi - lo) * inv_phi;
+                if (!evaluate_real_expression_at(expr, args[0], context, variable, d, fd)) {
+                    return false;
+                }
+            }
+        }
+        out = (lo + hi) / real(2.0);
+        return std::isfinite(out);
+    }
+
+    if (function == SpecialFunction::Sum) {
+        if (arg_count != 4) {
+            return false;
+        }
+        char variable = '\0';
+        CalcReal start_value = real(0.0);
+        CalcReal end_value = real(0.0);
+        int start_int = 0;
+        int end_int = 0;
+        if (!parse_variable_arg(expr, args[1], variable) ||
+            !evaluate_real_range(expr, args[2], context, override_variable, override_value, start_value) ||
+            !evaluate_real_range(expr, args[3], context, override_variable, override_value, end_value) ||
+            !is_near_integer(start_value, start_int) || !is_near_integer(end_value, end_int)) {
+            return false;
+        }
+        const int direction = end_int >= start_int ? 1 : -1;
+        const int terms = direction > 0 ? end_int - start_int + 1 : start_int - end_int + 1;
+        if (terms > 10000) {
+            return false;
+        }
+        out = real(0.0);
+        for (int i = start_int;; i += direction) {
+            CalcReal term = real(0.0);
+            if (!evaluate_real_expression_at(expr, args[0], context, variable, static_cast<CalcReal>(i), term)) {
+                return false;
+            }
+            out += term;
+            if (i == end_int) {
+                break;
+            }
+        }
+        return std::isfinite(out);
+    }
+
+    return false;
+}
+
+bool append_number_text(char* out, int& pos, int cap, CalcReal value) {
+    char text[32]{};
+    const int written = std::snprintf(text, sizeof(text), "%.17g", static_cast<double>(value));
+    if (written <= 0 || written >= static_cast<int>(sizeof(text))) {
+        return false;
+    }
+    return append_text(out, pos, cap, text);
+}
+
+bool expand_special_functions_range(const char* expr,
+                                    int start,
+                                    int end,
+                                    EvalContext& context,
+                                    char override_variable,
+                                    CalcReal override_value,
+                                    char* out,
+                                    int& pos,
+                                    int cap) {
+    for (int i = start; i < end;) {
+        int name_len = 0;
+        const SpecialFunction function = special_function_at(expr, i, end, name_len);
+        if (function != SpecialFunction::None) {
+            const int open = i + name_len;
+            const int close = matching_paren_local(expr, open, end);
+            if (close > open) {
+                ArgRange args[5]{};
+                int arg_count = 0;
+                CalcReal value = real(0.0);
+                if (!split_args(expr, open + 1, close, args, 5, arg_count) ||
+                    !compute_special_function(expr,
+                                              function,
+                                              args,
+                                              arg_count,
+                                              context,
+                                              override_variable,
+                                              override_value,
+                                              value) ||
+                    !append_number_text(out, pos, cap, value)) {
+                    return false;
+                }
+                i = close + 1;
+                continue;
+            }
+        }
+        if (!append_char(out, pos, cap, expr[i])) {
+            return false;
+        }
+        ++i;
+    }
+    return true;
+}
+
+bool expand_special_functions(const char* expression,
+                              EvalContext& context,
+                              char override_variable,
+                              CalcReal override_value,
+                              char* out,
+                              int cap) {
+    out[0] = '\0';
+    int pos = 0;
+    const int len = static_cast<int>(std::strlen(expression));
+    return expand_special_functions_range(expression, 0, len, context, override_variable, override_value, out, pos, cap);
+}
+
 bool parse_to_rpn(const char* expression, ParseState& state) {
     bool expect_operand = true;
     int i = 0;
@@ -591,7 +1182,20 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
                 Token token{};
                 token.kind = TokenKind::Function;
                 token.function = fn;
+                token.arity = 1;
                 token.pos = start;
+                int next = i;
+                while (std::isspace(static_cast<unsigned char>(expression[next]))) {
+                    ++next;
+                }
+                if (fn == Function::Rand && !is_open_paren(expression[next])) {
+                    token.arity = 0;
+                    if (!push_output(state, token)) {
+                        return false;
+                    }
+                    expect_operand = false;
+                    continue;
+                }
                 if (!push_operator(state, token)) {
                     return false;
                 }
@@ -629,7 +1233,35 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
             continue;
         }
 
+        if (expression[i] == ',') {
+            if (expect_operand) {
+                set_error(state, EvalError::UnexpectedToken, i);
+                return false;
+            }
+            bool found_lparen = false;
+            while (state.operator_count > 0) {
+                const Token top = state.operators[state.operator_count - 1];
+                if (top.kind == TokenKind::LParen) {
+                    found_lparen = true;
+                    break;
+                }
+                if (!pop_operator_to_output(state)) {
+                    return false;
+                }
+            }
+            if (!found_lparen || state.operator_count < 2 ||
+                state.operators[state.operator_count - 2].kind != TokenKind::Function) {
+                set_error(state, EvalError::UnexpectedToken, i);
+                return false;
+            }
+            ++state.operators[state.operator_count - 2].arity;
+            ++i;
+            expect_operand = true;
+            continue;
+        }
+
         if (is_close_paren(expression[i])) {
+            const bool empty_argument = expect_operand;
             bool found_lparen = false;
             while (state.operator_count > 0) {
                 const Token top = state.operators[state.operator_count - 1];
@@ -647,9 +1279,38 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
                 return false;
             }
             if (state.operator_count > 0 && state.operators[state.operator_count - 1].kind == TokenKind::Function) {
+                if (empty_argument) {
+                    if (state.operators[state.operator_count - 1].arity == 1) {
+                        state.operators[state.operator_count - 1].arity = 0;
+                    } else {
+                        set_error(state, EvalError::UnexpectedToken, i);
+                        return false;
+                    }
+                }
                 if (!pop_operator_to_output(state)) {
                     return false;
                 }
+            } else if (empty_argument) {
+                set_error(state, EvalError::UnexpectedToken, i);
+                return false;
+            }
+            ++i;
+            expect_operand = false;
+            continue;
+        }
+
+        if (expression[i] == '!') {
+            if (expect_operand) {
+                set_error(state, EvalError::UnexpectedToken, i);
+                return false;
+            }
+            Token token{};
+            token.kind = TokenKind::Function;
+            token.function = Function::Factorial;
+            token.arity = 1;
+            token.pos = i;
+            if (!push_output(state, token)) {
+                return false;
             }
             ++i;
             expect_operand = false;
@@ -706,7 +1367,7 @@ bool parse_to_rpn(const char* expression, ParseState& state) {
     return true;
 }
 
-EvalResult evaluate_rpn(const ParseState& state, EvalContext& context, bool override_x, CalcReal x_value) {
+EvalResult evaluate_rpn(const ParseState& state, EvalContext& context, char override_variable, CalcReal override_value) {
     ComplexValue stack[kMaxStack]{};
     int stack_count = 0;
 
@@ -729,8 +1390,8 @@ EvalResult evaluate_rpn(const ParseState& state, EvalContext& context, bool over
                 if (idx < 0 || idx >= 26) {
                     return fail(EvalError::UnknownIdentifier, token.pos);
                 }
-                if (override_x && token.variable == 'X') {
-                    value = make_complex(x_value, real(0.0));
+                if (override_variable != '\0' && token.variable == override_variable) {
+                    value = make_complex(override_value, real(0.0));
                 } else if (context.variable_valid[idx]) {
                     value = make_complex(context.variables[idx], context.variable_imag[idx]);
                 } else {
@@ -790,34 +1451,259 @@ EvalResult evaluate_rpn(const ParseState& state, EvalContext& context, bool over
         }
 
         if (token.kind == TokenKind::Function) {
-            if (stack_count < 1) {
+            if (!valid_arity(token.function, token.arity) || stack_count < token.arity) {
                 return fail(EvalError::UnexpectedToken, token.pos);
             }
-            ComplexValue arg = stack[stack_count - 1];
-            if (context.degree_mode &&
-                (token.function == Function::Sin || token.function == Function::Cos || token.function == Function::Tan)) {
-                arg = scale_complex(arg, kPi / real(180.0));
-            }
+            ComplexValue* args = stack + stack_count - token.arity;
             ComplexValue value{};
             switch (token.function) {
-                case Function::Sin: value = sin_complex(arg); break;
-                case Function::Cos: value = cos_complex(arg); break;
-                case Function::Tan: value = tan_complex(arg); break;
-                case Function::ASin: value = asin_complex(arg); break;
-                case Function::ACos: value = acos_complex(arg); break;
-                case Function::ATan: value = atan_complex(arg); break;
-                case Function::Sqrt: value = sqrt_complex(arg); break;
-                case Function::Log: value = div_complex(log_complex(arg), make_complex(std::log(real(10.0)), real(0.0))); break;
-                case Function::Ln: value = log_complex(arg); break;
-            }
-            if (context.degree_mode &&
-                (token.function == Function::ASin || token.function == Function::ACos || token.function == Function::ATan)) {
-                value = scale_complex(value, real(180.0) / kPi);
+                case Function::Sin: {
+                    ComplexValue arg = args[0];
+                    if (context.degree_mode) {
+                        arg = scale_complex(arg, kPi / real(180.0));
+                    }
+                    value = sin_complex(arg);
+                    break;
+                }
+                case Function::Cos: {
+                    ComplexValue arg = args[0];
+                    if (context.degree_mode) {
+                        arg = scale_complex(arg, kPi / real(180.0));
+                    }
+                    value = cos_complex(arg);
+                    break;
+                }
+                case Function::Tan: {
+                    ComplexValue arg = args[0];
+                    if (context.degree_mode) {
+                        arg = scale_complex(arg, kPi / real(180.0));
+                    }
+                    value = tan_complex(arg);
+                    break;
+                }
+                case Function::ASin:
+                    value = asin_complex(args[0]);
+                    if (context.degree_mode) {
+                        value = scale_complex(value, real(180.0) / kPi);
+                    }
+                    break;
+                case Function::ACos:
+                    value = acos_complex(args[0]);
+                    if (context.degree_mode) {
+                        value = scale_complex(value, real(180.0) / kPi);
+                    }
+                    break;
+                case Function::ATan:
+                    value = atan_complex(args[0]);
+                    if (context.degree_mode) {
+                        value = scale_complex(value, real(180.0) / kPi);
+                    }
+                    break;
+                case Function::Sqrt:
+                    value = sqrt_complex(args[0]);
+                    break;
+                case Function::Log:
+                    value = div_complex(log_complex(args[0]), make_complex(std::log(real(10.0)), real(0.0)));
+                    break;
+                case Function::Ln:
+                    value = log_complex(args[0]);
+                    break;
+                case Function::Abs:
+                    value = make_complex(std::sqrt(args[0].real * args[0].real + args[0].imag * args[0].imag), real(0.0));
+                    break;
+                case Function::Round: {
+                    int digits = 0;
+                    if (token.arity == 2 && !integer_value(args[1], digits)) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    if (digits < -9 || digits > 9) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    const CalcReal scale = pow_integer(real(10.0), digits);
+                    value = make_complex(std::round(args[0].real * scale) / scale,
+                                         std::round(args[0].imag * scale) / scale);
+                    break;
+                }
+                case Function::IPart: {
+                    CalcReal scalar = real(0.0);
+                    if (!scalar_value(args[0], scalar)) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    value = make_complex(scalar >= real(0.0) ? std::floor(scalar) : std::ceil(scalar), real(0.0));
+                    break;
+                }
+                case Function::FPart: {
+                    CalcReal scalar = real(0.0);
+                    if (!scalar_value(args[0], scalar)) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    const CalcReal whole = scalar >= real(0.0) ? std::floor(scalar) : std::ceil(scalar);
+                    value = make_complex(scalar - whole, real(0.0));
+                    break;
+                }
+                case Function::Int: {
+                    CalcReal scalar = real(0.0);
+                    if (!scalar_value(args[0], scalar)) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    value = make_complex(std::floor(scalar), real(0.0));
+                    break;
+                }
+                case Function::Min:
+                case Function::Max: {
+                    CalcReal best = real(0.0);
+                    if (!scalar_value(args[0], best)) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    for (int a = 1; a < token.arity; ++a) {
+                        CalcReal scalar = real(0.0);
+                        if (!scalar_value(args[a], scalar)) {
+                            return fail(EvalError::Domain, token.pos);
+                        }
+                        if ((token.function == Function::Min && scalar < best) ||
+                            (token.function == Function::Max && scalar > best)) {
+                            best = scalar;
+                        }
+                    }
+                    value = make_complex(best, real(0.0));
+                    break;
+                }
+                case Function::Lcm:
+                case Function::Gcd:
+                case Function::Remainder: {
+                    int lhs = 0;
+                    int rhs = 0;
+                    if (!integer_value(args[0], lhs) || !integer_value(args[1], rhs)) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    if (token.function == Function::Gcd) {
+                        value = make_complex(static_cast<CalcReal>(gcd_int(lhs, rhs)), real(0.0));
+                    } else if (token.function == Function::Lcm) {
+                        const int gcd = gcd_int(lhs, rhs);
+                        if (gcd == 0) {
+                            value = make_complex(real(0.0), real(0.0));
+                        } else {
+                            value = make_complex(static_cast<CalcReal>(abs_int(lhs / gcd * rhs)), real(0.0));
+                        }
+                    } else {
+                        if (rhs == 0) {
+                            return fail(EvalError::DivideByZero, token.pos);
+                        }
+                        value = make_complex(static_cast<CalcReal>(lhs % rhs), real(0.0));
+                    }
+                    break;
+                }
+                case Function::LogBase: {
+                    CalcReal value_arg = real(0.0);
+                    CalcReal base = real(0.0);
+                    if (!scalar_value(args[0], value_arg) || !scalar_value(args[1], base) ||
+                        value_arg <= real(0.0) || base <= real(0.0) || base == real(1.0)) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    value = make_complex(std::log(value_arg) / std::log(base), real(0.0));
+                    break;
+                }
+                case Function::Conj:
+                    value = make_complex(args[0].real, -args[0].imag);
+                    break;
+                case Function::Real:
+                    value = make_complex(args[0].real, real(0.0));
+                    break;
+                case Function::Imag:
+                    value = make_complex(args[0].imag, real(0.0));
+                    break;
+                case Function::Angle: {
+                    CalcReal angle = std::atan2(clean_zero(args[0].imag), clean_zero(args[0].real));
+                    if (context.degree_mode) {
+                        angle *= real(180.0) / kPi;
+                    }
+                    value = make_complex(angle, real(0.0));
+                    break;
+                }
+                case Function::Rand:
+                    value = make_complex(random_unit(context), real(0.0));
+                    break;
+                case Function::RandInt:
+                case Function::RandIntNoRep: {
+                    int lo = 0;
+                    int hi = 0;
+                    if (!integer_value(args[0], lo) || !integer_value(args[1], hi)) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    if (hi < lo) {
+                        const int tmp = hi;
+                        hi = lo;
+                        lo = tmp;
+                    }
+                    const std::uint32_t span = static_cast<std::uint32_t>(hi - lo + 1);
+                    value = make_complex(static_cast<CalcReal>(lo + static_cast<int>(next_random_u32(context) % span)),
+                                         real(0.0));
+                    break;
+                }
+                case Function::RandNorm: {
+                    CalcReal mean = real(0.0);
+                    CalcReal sd = real(0.0);
+                    if (!scalar_value(args[0], mean) || !scalar_value(args[1], sd) || sd < real(0.0)) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    CalcReal u1 = random_unit(context);
+                    const CalcReal u2 = random_unit(context);
+                    if (u1 <= real(0.0)) {
+                        u1 = real(1.0) / real(16777216.0);
+                    }
+                    const CalcReal z = std::sqrt(real(-2.0) * std::log(u1)) * std::cos(real(2.0) * kPi * u2);
+                    value = make_complex(mean + sd * z, real(0.0));
+                    break;
+                }
+                case Function::RandBin: {
+                    int trials = 0;
+                    CalcReal p = real(0.0);
+                    if (!integer_value(args[0], trials) || !scalar_value(args[1], p) ||
+                        trials < 0 || trials > 10000 || p < real(0.0) || p > real(1.0)) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    int count = 0;
+                    for (int trial = 0; trial < trials; ++trial) {
+                        if (random_unit(context) < p) {
+                            ++count;
+                        }
+                    }
+                    value = make_complex(static_cast<CalcReal>(count), real(0.0));
+                    break;
+                }
+                case Function::NPr:
+                case Function::NCr: {
+                    int n = 0;
+                    int r = 0;
+                    if (!integer_value(args[0], n) || !integer_value(args[1], r)) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    CalcReal computed = real(0.0);
+                    const bool ok = token.function == Function::NPr ? permutation_value(n, r, computed)
+                                                                     : combination_value(n, r, computed);
+                    if (!ok) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    value = make_complex(computed, real(0.0));
+                    break;
+                }
+                case Function::Factorial: {
+                    int n = 0;
+                    if (!integer_value(args[0], n) || n < 0 || n > 170) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                    value = make_complex(factorial_value(n), real(0.0));
+                    break;
+                }
             }
             if (!finite_complex(value)) {
                 return fail(EvalError::Domain, token.pos);
             }
-            stack[stack_count - 1] = value;
+            stack_count -= token.arity;
+            if (stack_count >= kMaxStack) {
+                return fail(EvalError::StackOverflow, token.pos);
+            }
+            stack[stack_count++] = value;
             continue;
         }
     }
@@ -849,7 +1735,11 @@ int find_store_arrow(const char* expression) {
     return -1;
 }
 
-EvalResult evaluate_impl(const char* expression, EvalContext& context, bool override_x, CalcReal x_value, bool update_ans) {
+EvalResult evaluate_impl(const char* expression,
+                         EvalContext& context,
+                         char override_variable,
+                         CalcReal override_value,
+                         bool update_ans) {
     if (expression == nullptr) {
         return fail(EvalError::EmptyExpression, 0);
     }
@@ -873,7 +1763,7 @@ EvalResult evaluate_impl(const char* expression, EvalContext& context, bool over
             lhs[i] = start[i];
         }
         lhs[store_pos] = '\0';
-        EvalResult assigned = evaluate_impl(lhs, context, override_x, x_value, update_ans);
+        EvalResult assigned = evaluate_impl(lhs, context, override_variable, override_value, update_ans);
         if (!assigned.ok) {
             return assigned;
         }
@@ -895,7 +1785,7 @@ EvalResult evaluate_impl(const char* expression, EvalContext& context, bool over
             if (variable < 'A' || variable > 'Z') {
                 return fail(EvalError::Assignment, static_cast<int>(start - expression));
             }
-            EvalResult assigned = evaluate_impl(after_var + 1, context, override_x, x_value, update_ans);
+            EvalResult assigned = evaluate_impl(after_var + 1, context, override_variable, override_value, update_ans);
             if (!assigned.ok) {
                 return assigned;
             }
@@ -914,15 +1804,19 @@ EvalResult evaluate_impl(const char* expression, EvalContext& context, bool over
     ParseState state{};
     state.error = EvalError::None;
     state.error_pos = -1;
+    char special_expanded[kExpressionCapacity]{};
+    if (!expand_special_functions(start, context, override_variable, override_value, special_expanded, kExpressionCapacity)) {
+        return fail(EvalError::Domain, 0);
+    }
     char expanded[kExpressionCapacity]{};
-    if (!expand_roots(expression, expanded, kExpressionCapacity)) {
+    if (!expand_roots(special_expanded, expanded, kExpressionCapacity)) {
         return fail(EvalError::TooManyTokens, 0);
     }
     if (!parse_to_rpn(expanded, state)) {
         return fail(state.error, state.error_pos);
     }
 
-    EvalResult result = evaluate_rpn(state, context, override_x, x_value);
+    EvalResult result = evaluate_rpn(state, context, override_variable, override_value);
     if (result.ok && update_ans) {
         context.ans = result.value;
         context.ans_imag = result.imag;
@@ -941,22 +1835,23 @@ void eval_context_init(EvalContext& context) {
     context.ans = 0.0;
     context.ans_imag = 0.0;
     context.degree_mode = false;
+    context.rng_state = 0x1234abcdU;
     context.variables['X' - 'A'] = 0.0;
     context.variable_imag['X' - 'A'] = 0.0;
     context.variable_valid['X' - 'A'] = true;
 }
 
 EvalResult evaluate_expression(const char* expression, EvalContext& context) {
-    return evaluate_impl(expression, context, false, 0.0, true);
+    return evaluate_impl(expression, context, '\0', 0.0, true);
 }
 
 EvalResult evaluate_expression_with_x(const char* expression, EvalContext& context, CalcReal x_value) {
-    return evaluate_impl(expression, context, true, x_value, true);
+    return evaluate_impl(expression, context, 'X', x_value, true);
 }
 
 EvalResult evaluate_expression_with_x_readonly(const char* expression, const EvalContext& context, CalcReal x_value) {
     EvalContext copy = context;
-    return evaluate_impl(expression, copy, true, x_value, false);
+    return evaluate_impl(expression, copy, 'X', x_value, false);
 }
 
 const char* eval_error_text(EvalError error) {
