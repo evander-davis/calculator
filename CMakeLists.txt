@@ -46,6 +46,14 @@ if(CALC_BUILD_TESTS)
     target_link_libraries(calc_visual_verifier PRIVATE calc_core)
     target_compile_features(calc_visual_verifier PRIVATE cxx_std_17)
     add_test(NAME calc_visual_verifier COMMAND calc_visual_verifier)
+
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME tether_protocol_tests
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/tether_viewer.py --self-test
+        )
+    endif()
 endif()
 
 if(CALC_BUILD_EMULATOR)

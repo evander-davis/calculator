@@ -42,6 +42,7 @@ target_compile_definitions(calc_tether PRIVATE
 
 target_link_libraries(calc_tether PRIVATE
     pico_stdlib
+    pico_multicore
     pico_stdio_usb
 )
 
