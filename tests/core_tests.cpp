@@ -139,6 +139,39 @@ int main() {
     check(result.ok && nearly(result.value, 15.0), "readonly x evaluation");
     check(nearly(context.ans, ans_before_readonly), "readonly evaluation leaves ans unchanged");
 
+    calc::CompiledExpression compiled{};
+    check(calc::compile_expression("sin(X)+X^2", compiled) && compiled.real_fast_path,
+          "compile real graph expression");
+    result = calc::evaluate_compiled_with_x_readonly(compiled, context, 2.0);
+    check(result.ok && nearly(result.value, std::sin(calc::CalcReal(2.0)) + 4.0),
+          "compiled real graph expression evaluates");
+    check(calc::compile_expression("X+i", compiled) && !compiled.real_fast_path,
+          "complex expression uses compiled complex path");
+    result = calc::evaluate_compiled_with_x_readonly(compiled, context, 2.0);
+    check(result.ok && nearly(result.value, 2.0) && nearly(result.imag, 1.0),
+          "compiled complex graph expression evaluates");
+
+    constexpr int evaluator_benchmark_iterations = 20000;
+    volatile calc::CalcReal evaluator_sink = 0;
+    const auto generic_eval_start = std::chrono::steady_clock::now();
+    for (int i = 0; i < evaluator_benchmark_iterations; ++i) {
+        result = calc::evaluate_expression_with_x_readonly("sin(X)+X^2", context, calc::CalcReal(i % 100) / 10);
+        evaluator_sink += result.value;
+    }
+    const auto generic_eval_elapsed = std::chrono::steady_clock::now() - generic_eval_start;
+    check(calc::compile_expression("sin(X)+X^2", compiled), "recompile evaluator benchmark expression");
+    const auto compiled_eval_start = std::chrono::steady_clock::now();
+    for (int i = 0; i < evaluator_benchmark_iterations; ++i) {
+        result = calc::evaluate_compiled_with_x_readonly(compiled, context, calc::CalcReal(i % 100) / 10);
+        evaluator_sink += result.value;
+    }
+    const auto compiled_eval_elapsed = std::chrono::steady_clock::now() - compiled_eval_start;
+    std::printf("Evaluator benchmark (%d): generic=%lld us compiled=%lld us\n",
+                evaluator_benchmark_iterations,
+                static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(generic_eval_elapsed).count()),
+                static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(compiled_eval_elapsed).count()));
+    check(evaluator_sink != calc::CalcReal(0), "evaluator benchmark result consumed");
+
     char deeply_nested[96]{};
     constexpr int nested_pairs = 40;
     for (int i = 0; i < nested_pairs; ++i) {
@@ -512,6 +545,50 @@ int main() {
         std::chrono::steady_clock::now() - graph_start);
     std::printf("Graph render benchmark: %lld ms\n", static_cast<long long>(graph_elapsed.count()));
     check(graph_elapsed.count() < 1000, "graph render completes within host performance guardrail");
+    const int initial_graph_evaluations = calc::calc_debug_last_graph_evaluations();
+    std::printf("Adaptive graph evaluations: %d/320\n", initial_graph_evaluations);
+    check(initial_graph_evaluations > 0 && initial_graph_evaluations < 240,
+          "adaptive smooth graph uses fewer than one evaluation per pixel");
+    calc::calc_render();
+    check(calc::calc_debug_last_graph_evaluations() == 0,
+          "unchanged graph reuses cached curve samples");
+
+    press(calc::Key::YEquals);
+    press(calc::Key::Clear);
+    press(calc::Key::Digit1);
+    press(calc::Key::Divide);
+    press(calc::Key::X);
+    press(calc::Key::Graph);
+    calc::calc_render();
+    const int reciprocal_evaluations = calc::calc_debug_last_graph_evaluations();
+    std::printf("Reciprocal adaptive evaluations: %d/320\n", reciprocal_evaluations);
+    check(reciprocal_evaluations > 0 && reciprocal_evaluations <= 320,
+          "adaptive reciprocal graph stays within one evaluation per pixel");
+    int max_red_column = 0;
+    int max_red_column_x = 0;
+    for (int x = 0; x < calc::kLcdWidth; ++x) {
+        int red_pixels = 0;
+        for (int y = 18; y < calc::kLcdHeight; ++y) {
+            if (pixels[y * calc::kLcdWidth + x] == 0xf800) ++red_pixels;
+        }
+        if (red_pixels > max_red_column) {
+            max_red_column = red_pixels;
+            max_red_column_x = x;
+        }
+    }
+    std::printf("Reciprocal max red column: %d at x=%d\n", max_red_column, max_red_column_x);
+    check(max_red_column < 100, "adaptive reciprocal graph does not bridge its vertical asymptote");
+
+    press(calc::Key::YEquals);
+    press(calc::Key::Clear);
+    press(calc::Key::Tan);
+    press(calc::Key::X);
+    press(calc::Key::Graph);
+    calc::calc_render();
+    const int tangent_evaluations = calc::calc_debug_last_graph_evaluations();
+    std::printf("Tangent adaptive evaluations: %d/320\n", tangent_evaluations);
+    check(tangent_evaluations > 0 && tangent_evaluations <= 320,
+          "adaptive tangent graph bounds high-curvature sampling");
     check(!calc::calc_needs_render(), "graph render clears dirty state");
     clock.now += 500;
     calc::calc_tick();

@@ -12,7 +12,7 @@
 
 namespace {
 
-constexpr std::uint8_t kDirtyMagic[4] = {'C', 'D', 'R', 'T'};
+constexpr std::uint8_t kBatchMagic[4] = {'C', 'B', 'A', 'T'};
 constexpr std::uint8_t kEndMagic[4] = {'C', 'E', 'N', 'D'};
 constexpr std::uint8_t kKeyPacket = 'K';
 constexpr std::uint8_t kRefreshPacket = 'R';
@@ -23,9 +23,12 @@ constexpr int kTileColumns = calc::kLcdWidth / kTileWidth;
 constexpr int kTileRows = calc::kLcdHeight / kTileHeight;
 constexpr int kTileCount = kTileColumns * kTileRows;
 constexpr int kTilePayloadBytes = kTileWidth * kTileHeight * static_cast<int>(sizeof(calc::Color));
-constexpr int kDirtyHeaderBytes = 16;
-constexpr int kEndPacketBytes = 20;
+constexpr int kRegionHeaderBytes = 8;
+constexpr int kBatchHeaderBytes = 12;
+constexpr int kBatchPacketBytes = 8192;
+constexpr int kEndPacketBytes = 24;
 constexpr std::uint32_t kRenderIntervalMs = 16;
+constexpr std::uint32_t kStackCanary = 0xa55a3cc3u;
 
 struct FrameReady {
     std::uint32_t sequence;
@@ -34,7 +37,7 @@ struct FrameReady {
 
 calc::Color g_lcd[calc::kLcdWidth * calc::kLcdHeight]{};
 std::uint32_t g_sent_tile_hash[kTileCount]{};
-std::uint8_t g_tx_packet[kDirtyHeaderBytes + kTilePayloadBytes]{};
+std::uint8_t g_tx_packet[kBatchPacketBytes]{};
 alignas(8) std::uint32_t g_calculator_stack[2048]{};
 
 mutex_t g_framebuffer_mutex;
@@ -85,8 +88,9 @@ void consume_host_packets() {
     }
 }
 
-bool prepare_dirty_tile(std::uint32_t sequence, int x, int y, int width, int height, bool force) {
-    int packet_offset = kDirtyHeaderBytes;
+bool append_dirty_tile(int& packet_offset, int x, int y, int width, int height, bool force) {
+    const int record_start = packet_offset;
+    packet_offset += kRegionHeaderBytes;
     std::uint32_t hash = 2166136261u;
 
     mutex_enter_blocking(&g_framebuffer_mutex);
@@ -111,23 +115,38 @@ bool prepare_dirty_tile(std::uint32_t sequence, int x, int y, int width, int hei
     mutex_exit(&g_framebuffer_mutex);
 
     if (!changed) {
+        packet_offset = record_start;
         return false;
     }
-
-    for (int index = 0; index < 4; ++index) {
-        g_tx_packet[index] = kDirtyMagic[index];
-    }
-    encode_u32(g_tx_packet + 4, sequence);
-    encode_u16(g_tx_packet + 8, static_cast<std::uint16_t>(x));
-    encode_u16(g_tx_packet + 10, static_cast<std::uint16_t>(y));
-    encode_u16(g_tx_packet + 12, static_cast<std::uint16_t>(width));
-    encode_u16(g_tx_packet + 14, static_cast<std::uint16_t>(height));
+    encode_u16(g_tx_packet + record_start, static_cast<std::uint16_t>(x));
+    encode_u16(g_tx_packet + record_start + 2, static_cast<std::uint16_t>(y));
+    encode_u16(g_tx_packet + record_start + 4, static_cast<std::uint16_t>(width));
+    encode_u16(g_tx_packet + record_start + 6, static_cast<std::uint16_t>(height));
     return true;
+}
+
+void send_batch(std::uint32_t sequence, std::uint16_t regions, int packet_bytes) {
+    for (int index = 0; index < 4; ++index) g_tx_packet[index] = kBatchMagic[index];
+    encode_u32(g_tx_packet + 4, sequence);
+    encode_u16(g_tx_packet + 8, regions);
+    encode_u16(g_tx_packet + 10, 0);
+    send_bytes(g_tx_packet, packet_bytes);
+}
+
+std::uint32_t calculator_stack_high_water_bytes() {
+    std::size_t untouched_words = 0;
+    while (untouched_words < sizeof(g_calculator_stack) / sizeof(g_calculator_stack[0]) &&
+           g_calculator_stack[untouched_words] == kStackCanary) {
+        ++untouched_words;
+    }
+    return static_cast<std::uint32_t>(sizeof(g_calculator_stack) - untouched_words * sizeof(g_calculator_stack[0]));
 }
 
 bool send_dirty_frame(const FrameReady& frame, bool force) {
     std::uint16_t changed_tiles = 0;
     std::uint32_t payload_bytes = 0;
+    std::uint16_t batch_regions = 0;
+    int batch_offset = kBatchHeaderBytes;
 
     for (int y = 0; y < calc::kLcdHeight; y += kTileHeight) {
         const int height = y + kTileHeight <= calc::kLcdHeight ? kTileHeight : calc::kLcdHeight - y;
@@ -138,19 +157,24 @@ bool send_dirty_frame(const FrameReady& frame, bool force) {
                 g_reference_valid = false;
                 return false;
             }
-            if (!prepare_dirty_tile(frame.sequence, x, y, width, height, force)) {
+            const int tile_bytes = width * height * static_cast<int>(sizeof(calc::Color));
+            const int record_bytes = kRegionHeaderBytes + tile_bytes;
+            if (batch_regions > 0 && batch_offset + record_bytes > kBatchPacketBytes) {
+                send_batch(frame.sequence, batch_regions, batch_offset);
+                batch_regions = 0;
+                batch_offset = kBatchHeaderBytes;
+            }
+            if (!append_dirty_tile(batch_offset, x, y, width, height, force)) {
                 continue;
             }
-
-            const int tile_bytes = width * height * static_cast<int>(sizeof(calc::Color));
-            send_bytes(g_tx_packet, kDirtyHeaderBytes + tile_bytes);
+            ++batch_regions;
             ++changed_tiles;
             payload_bytes += static_cast<std::uint32_t>(tile_bytes);
         }
     }
 
-    if (changed_tiles == 0) {
-        return true;
+    if (batch_regions > 0) {
+        send_batch(frame.sequence, batch_regions, batch_offset);
     }
 
     std::uint8_t end_packet[kEndPacketBytes]{};
@@ -162,6 +186,7 @@ bool send_dirty_frame(const FrameReady& frame, bool force) {
     encode_u16(end_packet + 10, force ? 1u : 0u);
     encode_u32(end_packet + 12, payload_bytes);
     encode_u32(end_packet + 16, frame.render_us);
+    encode_u32(end_packet + 20, calculator_stack_high_water_bytes());
     send_bytes(end_packet, kEndPacketBytes);
     stdio_flush();
 
@@ -259,6 +284,7 @@ void calculator_core_main() {
 
 int main() {
     stdio_init_all();
+    for (auto& word : g_calculator_stack) word = kStackCanary;
     mutex_init(&g_framebuffer_mutex);
     queue_init(&g_key_queue, sizeof(std::uint8_t), 32);
     queue_init(&g_frame_queue, sizeof(FrameReady), 2);

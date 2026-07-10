@@ -79,13 +79,18 @@ The current RP2350 target is a USB-tether test firmware for the Seeed XIAO
 RP2350. Core 0 owns USB transport and host key reception. Core 1 runs the
 portable calculator and renders changed or cursor-blinking screens at up to
 60 Hz. Firmware uses hardware-accelerated `float` math by default and gives the
-calculator core an explicit 8 KiB stack in main SRAM. The transport hashes
-16x16 RGB565 tiles, sends only changed tiles, and sends a full dirty-tile
-keyframe when the viewer connects or requests recovery. Tile hashes replace a
-second full framebuffer, saving about 149 KiB of RAM, while on-demand rendering
-avoids re-evaluating static graphs. This keeps key handling responsive while
-large screen updates are in flight and allows small cursor/menu changes to
-update much faster than full-frame USB streaming.
+calculator core an explicit 8 KiB stack in main SRAM. Stack canaries report the
+measured high-water use in the tether viewer; a 40-level nested-expression and
+graph workload reached about 7.2 KiB, so the full reservation is retained. The
+transport hashes 16x16 RGB565 tiles, sends only changed tiles, and batches up to
+about 8 KiB of dirty regions per USB write. A full dirty-tile keyframe is sent
+when the viewer connects or requests recovery. Tile hashes replace a second
+full framebuffer, saving about 149 KiB of RAM, while on-demand rendering avoids
+re-evaluating static graphs. Graph expressions compile once into fixed RPN,
+common real-valued expressions use a scalar evaluator, and adaptive sampling
+plus cached curve samples reduce smooth-curve work and trace redraws. This keeps
+key handling responsive while large screen updates are in flight and allows
+small cursor/menu changes to update much faster than full-frame USB streaming.
 
 Configure once, if the build directory does not already exist:
 
@@ -121,8 +126,9 @@ py tools\tether_viewer.py --port COM4
 
 The viewer status line reports displayed update rate, recent USB throughput,
 dirty tile/payload counts, on-device render time, and approximate key-to-frame
-latency. Its laptop-rendered TI-style keypad sends semantic key packets to the
-RP2350; the keypad is not part of the device framebuffer. Run the viewer's
+latency, plus the core-1 stack high-water mark. Its laptop-rendered TI-style
+keypad sends semantic key packets to the RP2350; the keypad is not part of the
+device framebuffer. Run the viewer's
 protocol, key-map, keypad-layout, and RGB565 conversion self-test without
 hardware:
 

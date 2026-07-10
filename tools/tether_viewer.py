@@ -18,8 +18,9 @@ WIDTH = 320
 HEIGHT = 240
 FRAME_MAGIC = b"CFRM"
 DIRTY_MAGIC = b"CDRT"
+BATCH_MAGIC = b"CBAT"
 END_MAGIC = b"CEND"
-PACKET_MAGICS = (FRAME_MAGIC, DIRTY_MAGIC, END_MAGIC)
+PACKET_MAGICS = (FRAME_MAGIC, DIRTY_MAGIC, BATCH_MAGIC, END_MAGIC)
 RGB565_BYTES = WIDTH * HEIGHT * 2
 RGB888_BYTES = WIDTH * HEIGHT * 3
 PPM_HEADER = b"P6\n320 240\n255\n"
@@ -284,6 +285,22 @@ def rgb565_frame_to_rgb(payload):
     return rgb
 
 
+def read_batch_regions(stream, rgb, region_count):
+    payload_bytes = 0
+    wire_bytes = 0
+    for _ in range(region_count):
+        header = read_exact(stream, 8)
+        x, y, width, height = struct.unpack("<HHHH", header)
+        validate_dirty_region(x, y, width, height)
+        if width > 16 or height > 16:
+            raise ValueError(f"Dirty tile exceeds 16x16: {width}x{height}")
+        payload = read_exact(stream, width * height * 2)
+        apply_rgb565_region(rgb, x, y, width, height, payload)
+        payload_bytes += len(payload)
+        wire_bytes += len(header) + len(payload)
+    return payload_bytes, wire_bytes
+
+
 def run_protocol_self_test():
     rgb = bytearray(RGB888_BYTES)
     payload = struct.pack("<HHHH", 0xF800, 0x07E0, 0x001F, 0xFFFF)
@@ -308,6 +325,11 @@ def run_protocol_self_test():
             return result
 
     assert sync_to_magic(MemoryStream(b"noise" + DIRTY_MAGIC)) == DIRTY_MAGIC
+    batch_rgb = bytearray(RGB888_BYTES)
+    batch_data = struct.pack("<HHHHH", 7, 8, 1, 1, 0xF800)
+    batch_payload, batch_wire = read_batch_regions(MemoryStream(batch_data), batch_rgb, 1)
+    assert batch_payload == 2 and batch_wire == 10
+    assert tuple(batch_rgb[((8 * WIDTH + 7) * 3) : ((8 * WIDTH + 7) * 3 + 3)]) == (255, 0, 0)
     layout_keys = [entry[3] for row in KEYPAD_ROWS for entry in row if entry is not None]
     layout_keys.extend(key for _, key, _, _ in ARROW_KEYS)
     assert len(layout_keys) == 50
@@ -437,7 +459,7 @@ class Viewer:
         wire_kib = sum(sample[1] for sample in self.wire_samples) / 1024.0
         return display_fps, wire_kib
 
-    def finish_frame(self, seq, tiles, flags, payload_bytes, render_us, end_packet_bytes=20):
+    def finish_frame(self, seq, tiles, flags, payload_bytes, render_us, stack_used=0, end_packet_bytes=24):
         now = time.monotonic()
         self.frames += 1
         wire_bytes = self.pending_wire_bytes + end_packet_bytes
@@ -457,7 +479,8 @@ class Viewer:
         ppm = PPM_HEADER + bytes(self.rgb)
         details = (
             f"Frame {seq}  {display_fps:4.1f} display FPS  {wire_kib:6.1f} KiB/s  "
-            f"{tiles} tiles/{payload_bytes / 1024.0:.1f} KiB  render {render_us / 1000.0:.2f} ms"
+            f"{tiles} tiles/{payload_bytes / 1024.0:.1f} KiB  render {render_us / 1000.0:.2f} ms  "
+            f"stack {stack_used / 1024.0:.1f} KiB"
         )
         if flags & 1:
             details += "  keyframe"
@@ -493,9 +516,22 @@ class Viewer:
                     self.pending_wire_bytes += 4 + len(header) + len(payload)
                     self.pending_tiles += 1
                     self.pending_payload_bytes += len(payload)
+                elif magic == BATCH_MAGIC:
+                    header = read_exact(self.ser, 8)
+                    seq, regions, _reserved = struct.unpack("<IHH", header)
+                    if self.pending_sequence is None:
+                        self.pending_sequence = seq
+                    elif self.pending_sequence != seq:
+                        raise ValueError(f"Dirty sequence changed from {self.pending_sequence} to {seq}")
+                    payload_bytes, region_wire_bytes = read_batch_regions(self.ser, self.rgb, regions)
+                    self.pending_wire_bytes += 4 + len(header) + region_wire_bytes
+                    self.pending_tiles += regions
+                    self.pending_payload_bytes += payload_bytes
                 elif magic == END_MAGIC:
-                    header = read_exact(self.ser, 16)
-                    seq, tiles, flags, payload_bytes, render_us = struct.unpack("<IHHII", header)
+                    header = read_exact(self.ser, 20)
+                    seq, tiles, flags, payload_bytes, render_us, stack_used = struct.unpack("<IHHIII", header)
+                    if self.pending_sequence is None and tiles == 0 and payload_bytes == 0:
+                        self.pending_sequence = seq
                     if self.pending_sequence != seq:
                         raise ValueError(f"Frame end sequence {seq} does not match {self.pending_sequence}")
                     if tiles != self.pending_tiles or payload_bytes != self.pending_payload_bytes:
@@ -503,7 +539,7 @@ class Viewer:
                             f"Frame {seq} summary mismatch: {tiles}/{payload_bytes} received "
                             f"{self.pending_tiles}/{self.pending_payload_bytes}"
                         )
-                    self.finish_frame(seq, tiles, flags, payload_bytes, render_us)
+                    self.finish_frame(seq, tiles, flags, payload_bytes, render_us, stack_used)
             except Exception as exc:
                 if self.running:
                     self.pending_wire_bytes = 0

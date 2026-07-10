@@ -201,6 +201,14 @@ struct EvalResult {
     int error_pos;
 };
 
+// Opaque reference to the evaluator's single fixed compiled-expression
+// workspace. Compile and consume it on the same calculator thread.
+struct CompiledExpression {
+    std::uint32_t generation;
+    bool valid;
+    bool real_fast_path;
+};
+
 struct LayoutDebugInfo {
     int width;
     int ascent;
@@ -228,6 +236,10 @@ void eval_context_init(EvalContext& context);
 EvalResult evaluate_expression(const char* expression, EvalContext& context);
 EvalResult evaluate_expression_with_x(const char* expression, EvalContext& context, CalcReal x_value);
 EvalResult evaluate_expression_with_x_readonly(const char* expression, const EvalContext& context, CalcReal x_value);
+bool compile_expression(const char* expression, CompiledExpression& compiled);
+EvalResult evaluate_compiled_with_x_readonly(const CompiledExpression& compiled,
+                                             const EvalContext& context,
+                                             CalcReal x_value);
 const char* eval_error_text(EvalError error);
 
 bool graph_to_screen(const GraphWindow& window, CalcReal x, CalcReal y, int& sx, int& sy);
@@ -240,6 +252,7 @@ void calc_key_down(Key key);
 void calc_key_up(Key key);
 bool calc_needs_render();
 void calc_render();
+int calc_debug_last_graph_evaluations();
 Screen calc_screen();
 bool calc_debug_layout_expression(const char* expression, LayoutDebugInfo& info);
 void calc_debug_set_home_expression(const char* expression, int cursor);

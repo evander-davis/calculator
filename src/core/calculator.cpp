@@ -128,6 +128,13 @@ struct CalculatorState {
 
 CalculatorState g{};
 
+constexpr std::int16_t kGraphSampleMissing = 32767;
+constexpr std::int16_t kGraphSampleInvalid = 32766;
+std::int16_t g_graph_sample_y[kMaxYEquations][kLcdWidth]{};
+std::uint32_t g_graph_sample_fingerprint = 0;
+bool g_graph_sample_cache_valid = false;
+int g_last_graph_evaluations = 0;
+
 enum class MathMenuAction : std::uint8_t {
     InsertRaw,
     InsertFunction,
@@ -1020,41 +1027,46 @@ CalcReal round_table_value(CalcReal value) {
     return std::round(value * scale) / scale;
 }
 
-void trim_fixed_text(char* out) {
-    char* dot = std::strchr(out, '.');
-    if (dot == nullptr) {
-        return;
-    }
-    char* end = out + std::strlen(out) - 1;
-    while (end > dot && *end == '0') {
-        *end = '\0';
-        --end;
-    }
-    if (end == dot) {
-        *end = '\0';
-    }
-}
-
-void normalize_scientific_exponent(char* out) {
-    char* e = std::strchr(out, 'E');
-    if (e == nullptr) {
-        return;
-    }
-    if (e[1] == '+') {
-        std::memmove(e + 1, e + 2, std::strlen(e + 2) + 1u);
-    }
-    const int exp_start = e[1] == '-' ? 2 : 1;
-    while (e[exp_start] == '0' && e[exp_start + 1] != '\0') {
-        std::memmove(e + exp_start, e + exp_start + 1, std::strlen(e + exp_start + 1) + 1u);
-    }
-}
-
 int scientific_exponent_chars(CalcReal value) {
-    char text[16]{};
-    std::snprintf(text, sizeof(text), "%.0E", static_cast<double>(value));
-    normalize_scientific_exponent(text);
-    const char* e = std::strchr(text, 'E');
-    return e == nullptr ? 0 : static_cast<int>(std::strlen(e));
+    int exponent = 0;
+    value = std::fabs(value);
+    if (value == real(0.0)) return 0;
+    while (value >= real(10.0)) {
+        value /= real(10.0);
+        ++exponent;
+    }
+    while (value < real(1.0)) {
+        value *= real(10.0);
+        --exponent;
+    }
+    int digits = 1;
+    for (int magnitude = exponent < 0 ? -exponent : exponent; magnitude >= 10; magnitude /= 10) ++digits;
+    return 1 + (exponent < 0 ? 1 : 0) + digits;
+}
+
+void format_scientific_value(CalcReal value, char* out, std::size_t size, int precision) {
+    out[0] = '\0';
+    std::size_t pos = 0;
+    if (value < real(0.0)) {
+        append_char(out, size, pos, '-');
+        value = -value;
+    }
+    int exponent = 0;
+    while (value >= real(10.0)) {
+        value /= real(10.0);
+        ++exponent;
+    }
+    while (value > real(0.0) && value < real(1.0)) {
+        value *= real(10.0);
+        --exponent;
+    }
+    append_fixed_abs(out, size, pos, value, precision);
+    append_char(out, size, pos, 'E');
+    if (exponent < 0) {
+        append_char(out, size, pos, '-');
+        exponent = -exponent;
+    }
+    append_uint(out, size, pos, static_cast<unsigned int>(exponent));
 }
 
 void format_table_value(CalcReal value, char* out, std::size_t size, int max_chars) {
@@ -1083,12 +1095,10 @@ void format_table_value(CalcReal value, char* out, std::size_t size, int max_cha
         if (precision < 0) {
             precision = 0;
         }
-        std::snprintf(out, size, "%.*E", precision, static_cast<double>(value));
-        normalize_scientific_exponent(out);
+        format_scientific_value(value, out, size, precision);
         while (static_cast<int>(std::strlen(out)) > max_chars && precision > 0) {
             --precision;
-            std::snprintf(out, size, "%.*E", precision, static_cast<double>(value));
-            normalize_scientific_exponent(out);
+            format_scientific_value(value, out, size, precision);
         }
         return;
     }
@@ -1110,8 +1120,12 @@ void format_table_value(CalcReal value, char* out, std::size_t size, int max_cha
     if (decimals > 4) {
         decimals = 4;
     }
-    std::snprintf(out, size, "%.*f", decimals, static_cast<double>(value));
-    trim_fixed_text(out);
+    std::size_t pos = 0;
+    if (value < real(0.0)) {
+        append_char(out, size, pos, '-');
+        value = -value;
+    }
+    append_fixed_abs(out, size, pos, value, decimals);
 }
 
 Color graph_color(int index) {
@@ -4883,6 +4897,102 @@ void draw_axes(Display& display) {
     }
 }
 
+std::uint32_t graph_sample_fingerprint() {
+    std::uint32_t hash = 2166136261u;
+    auto add_bytes = [&](const void* data, std::size_t size) {
+        const auto* bytes = static_cast<const std::uint8_t*>(data);
+        for (std::size_t i = 0; i < size; ++i) hash = (hash ^ bytes[i]) * 16777619u;
+    };
+    add_bytes(&g.window, sizeof(g.window));
+    add_bytes(g.y_expr, sizeof(g.y_expr));
+    add_bytes(g.y_len, sizeof(g.y_len));
+    add_bytes(g.eval.variables, sizeof(g.eval.variables));
+    add_bytes(g.eval.variable_imag, sizeof(g.eval.variable_imag));
+    add_bytes(g.eval.variable_valid, sizeof(g.eval.variable_valid));
+    add_bytes(&g.eval.degree_mode, sizeof(g.eval.degree_mode));
+    return hash;
+}
+
+void prepare_graph_sample_cache() {
+    const std::uint32_t fingerprint = graph_sample_fingerprint();
+    if (g_graph_sample_cache_valid && fingerprint == g_graph_sample_fingerprint) {
+        return;
+    }
+    for (int eq = 0; eq < kMaxYEquations; ++eq) {
+        for (int px = 0; px < kLcdWidth; ++px) {
+            g_graph_sample_y[eq][px] = kGraphSampleMissing;
+        }
+    }
+    g_graph_sample_fingerprint = fingerprint;
+    g_graph_sample_cache_valid = true;
+}
+
+struct GraphPixelSample {
+    bool valid;
+    int y;
+};
+
+GraphPixelSample sample_graph_pixel(int eq, const CompiledExpression* compiled, int px) {
+    const std::int16_t cached = g_graph_sample_y[eq][px];
+    if (cached != kGraphSampleMissing) {
+        return {cached != kGraphSampleInvalid, cached == kGraphSampleInvalid ? 0 : cached};
+    }
+
+    ++g_last_graph_evaluations;
+    const CalcReal x = screen_to_graph_x(g.window, px);
+    EvalResult result = compiled != nullptr
+                            ? evaluate_compiled_with_x_readonly(*compiled, g.eval, x)
+                            : evaluate_expression_with_x_readonly(g.y_expr[eq], g.eval, x);
+    int sx = 0;
+    int sy = 0;
+    if (!result.ok || !near_zero(result.imag) || !std::isfinite(result.value) ||
+        !graph_to_plot_point(g.window, x, result.value, sx, sy)) {
+        g_graph_sample_y[eq][px] = kGraphSampleInvalid;
+        return {false, 0};
+    }
+    if (sy < -32760) sy = -32760;
+    if (sy > 32760) sy = 32760;
+    g_graph_sample_y[eq][px] = static_cast<std::int16_t>(sy);
+    return {true, sy};
+}
+
+bool graph_segment_crosses_window(const GraphPixelSample& lhs, const GraphPixelSample& rhs) {
+    return lhs.valid && rhs.valid &&
+           ((lhs.y < kPlotTop && rhs.y > kPlotBottom) || (rhs.y < kPlotTop && lhs.y > kPlotBottom));
+}
+
+void draw_adaptive_graph_segment(Display& display,
+                                 int eq,
+                                 const CompiledExpression* compiled,
+                                 int x0,
+                                 GraphPixelSample y0,
+                                 int x1,
+                                 GraphPixelSample y1,
+                                 Color color) {
+    const int span = x1 - x0;
+    if (span <= 1) {
+        if (y0.valid && y1.valid && !graph_segment_crosses_window(y0, y1)) {
+            draw_clipped_plot_line(display, x0, y0.y, x1, y1.y, color);
+        }
+        return;
+    }
+
+    const int mid_x = x0 + span / 2;
+    const GraphPixelSample mid = sample_graph_pixel(eq, compiled, mid_x);
+    const int linear_mid = y0.valid && y1.valid ? (y0.y + y1.y) / 2 : 0;
+    const bool smooth = y0.valid && mid.valid && y1.valid &&
+                        std::abs(mid.y - linear_mid) <= 1 &&
+                        !(graph_segment_crosses_window(y0, y1) &&
+                          (mid.y < kPlotTop || mid.y > kPlotBottom));
+    if (smooth) {
+        draw_clipped_plot_line(display, x0, y0.y, mid_x, mid.y, color);
+        draw_clipped_plot_line(display, mid_x, mid.y, x1, y1.y, color);
+        return;
+    }
+    draw_adaptive_graph_segment(display, eq, compiled, x0, y0, mid_x, mid, color);
+    draw_adaptive_graph_segment(display, eq, compiled, mid_x, mid, x1, y1, color);
+}
+
 void render_graph(Display& display) {
     clear(display, kWhite);
     title(display, "GRAPH");
@@ -4902,33 +5012,26 @@ void render_graph(Display& display) {
         return;
     }
 
+    prepare_graph_sample_cache();
+    g_last_graph_evaluations = 0;
     for (int eq = 0; eq < kMaxYEquations; ++eq) {
         if (g.y_len[eq] == 0) {
             continue;
         }
-        bool have_prev = false;
-        int prev_x = 0;
-        int prev_y = 0;
-        CalcReal prev_graph_x = real(0.0);
-        CalcReal prev_graph_y = real(0.0);
+        CompiledExpression compiled{};
+        const bool needs_samples = g_graph_sample_y[eq][0] == kGraphSampleMissing;
+        const CompiledExpression* compiled_ptr =
+            needs_samples && compile_expression(g.y_expr[eq], compiled) ? &compiled : nullptr;
         const Color color = graph_color(eq);
-        for (int px = 0; px < kLcdWidth; ++px) {
-            const CalcReal x = screen_to_graph_x(g.window, px);
-            CalcReal y = real(0.0);
-            int sx = 0;
-            int sy = 0;
-            if (evaluate_y_at(eq, x, y) && graph_to_plot_point(g.window, x, y, sx, sy)) {
-                if (have_prev && should_connect_graph_points(eq, prev_graph_x, prev_graph_y, x, y)) {
-                    draw_clipped_plot_line(display, prev_x, prev_y, sx, sy, color);
-                }
-                prev_x = sx;
-                prev_y = sy;
-                prev_graph_x = x;
-                prev_graph_y = y;
-                have_prev = true;
-            } else {
-                have_prev = false;
-            }
+        int left_x = 0;
+        GraphPixelSample left = sample_graph_pixel(eq, compiled_ptr, left_x);
+        while (left_x < kLcdWidth - 1) {
+            int right_x = left_x + 8;
+            if (right_x >= kLcdWidth) right_x = kLcdWidth - 1;
+            const GraphPixelSample right = sample_graph_pixel(eq, compiled_ptr, right_x);
+            draw_adaptive_graph_segment(display, eq, compiled_ptr, left_x, left, right_x, right, color);
+            left_x = right_x;
+            left = right;
         }
     }
     draw_grid_step_labels(display,
@@ -5297,6 +5400,10 @@ void calc_key_up(Key) {}
 
 bool calc_needs_render() {
     return g.render_dirty;
+}
+
+int calc_debug_last_graph_evaluations() {
+    return g_last_graph_evaluations;
 }
 
 void calc_render() {

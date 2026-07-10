@@ -88,6 +88,7 @@ struct ParseState {
 ParseState g_cached_parse{};
 char g_cached_source[kExpressionCapacity]{};
 bool g_cached_parse_valid = false;
+std::uint32_t g_compile_generation = 0;
 
 bool same_word(const char* text, int len, const char* word) {
     const int word_len = static_cast<int>(std::strlen(word));
@@ -452,6 +453,7 @@ struct ComplexValue {
 };
 
 ComplexValue g_eval_stack[kMaxStack]{};
+CalcReal g_real_eval_stack[kMaxStack]{};
 
 EvalResult fail(EvalError error, int pos) {
     EvalResult result{};
@@ -1041,9 +1043,72 @@ bool compute_special_function(const char* expr,
 }
 
 bool append_number_text(char* out, int& pos, int cap, CalcReal value) {
+#if defined(CALC_USE_FLOAT)
+    if (!std::isfinite(value)) {
+        return false;
+    }
     char text[32]{};
-    const char* format = sizeof(CalcReal) == sizeof(float) ? "%.9g" : "%.17g";
-    const int written = std::snprintf(text, sizeof(text), format, static_cast<double>(value));
+    int written = 0;
+    auto put = [&](char ch) {
+        if (written + 1 < static_cast<int>(sizeof(text))) {
+            text[written++] = ch;
+            text[written] = '\0';
+        }
+    };
+    auto put_unsigned = [&](std::uint64_t number, int minimum_digits) {
+        char digits[20]{};
+        int count = 0;
+        do {
+            digits[count++] = static_cast<char>('0' + number % 10u);
+            number /= 10u;
+        } while (number > 0u && count < static_cast<int>(sizeof(digits)));
+        while (count < minimum_digits) digits[count++] = '0';
+        while (count > 0) put(digits[--count]);
+    };
+    if (value < real(0.0)) {
+        put('-');
+        value = -value;
+    }
+    int exponent = 0;
+    bool scientific = value != real(0.0) && (value >= real(100000000.0) || value < real(0.0001));
+    if (scientific) {
+        while (value >= real(10.0)) {
+            value /= real(10.0);
+            ++exponent;
+        }
+        while (value < real(1.0)) {
+            value *= real(10.0);
+            --exponent;
+        }
+    }
+    int whole_digits = 1;
+    for (CalcReal whole = value; whole >= real(10.0); whole /= real(10.0)) ++whole_digits;
+    int decimals = 9 - whole_digits;
+    if (decimals < 0) decimals = 0;
+    std::uint64_t scale = 1;
+    for (int i = 0; i < decimals; ++i) scale *= 10u;
+    std::uint64_t rounded = static_cast<std::uint64_t>(std::floor(value * static_cast<CalcReal>(scale) + real(0.5)));
+    std::uint64_t whole = rounded / scale;
+    std::uint64_t fraction = rounded % scale;
+    put_unsigned(whole, 1);
+    if (decimals > 0 && fraction != 0u) {
+        put('.');
+        const int fraction_start = written;
+        put_unsigned(fraction, decimals);
+        while (written > fraction_start && text[written - 1] == '0') text[--written] = '\0';
+    }
+    if (scientific) {
+        put('e');
+        if (exponent < 0) {
+            put('-');
+            exponent = -exponent;
+        }
+        put_unsigned(static_cast<std::uint64_t>(exponent), 1);
+    }
+#else
+    char text[32]{};
+    const int written = std::snprintf(text, sizeof(text), "%.17g", static_cast<double>(value));
+#endif
     if (written <= 0 || written >= static_cast<int>(sizeof(text))) {
         return false;
     }
@@ -1735,6 +1800,238 @@ EvalResult evaluate_rpn(const ParseState& state, EvalContext& context, char over
     return ok(stack[0]);
 }
 
+bool supports_real_fast_path(const ParseState& state) {
+    for (int i = 0; i < state.output_count; ++i) {
+        const Token& token = state.output[i];
+        if (token.kind == TokenKind::Number && token.imag != real(0.0)) {
+            return false;
+        }
+        if (token.kind != TokenKind::Function) {
+            continue;
+        }
+        switch (token.function) {
+            case Function::Sin:
+            case Function::Cos:
+            case Function::Tan:
+            case Function::ASin:
+            case Function::ACos:
+            case Function::ATan:
+            case Function::Sqrt:
+            case Function::Log:
+            case Function::Ln:
+            case Function::Abs:
+            case Function::Round:
+            case Function::IPart:
+            case Function::FPart:
+            case Function::Int:
+            case Function::Min:
+            case Function::Max:
+            case Function::LogBase:
+            case Function::Conj:
+            case Function::Real:
+            case Function::Imag:
+            case Function::Angle: break;
+            default: return false;
+        }
+    }
+    return true;
+}
+
+EvalResult evaluate_rpn_real(const ParseState& state,
+                             EvalContext& context,
+                             char override_variable,
+                             CalcReal override_value,
+                             bool& used) {
+    used = true;
+    int stack_count = 0;
+    for (int i = 0; i < state.output_count; ++i) {
+        const Token& token = state.output[i];
+        if (token.kind == TokenKind::Number) {
+            if (token.imag != real(0.0) || stack_count >= kMaxStack) {
+                used = token.imag == real(0.0);
+                return used ? fail(EvalError::StackOverflow, token.pos) : fail(EvalError::Domain, token.pos);
+            }
+            g_real_eval_stack[stack_count++] = token.number;
+            continue;
+        }
+        if (token.kind == TokenKind::Variable) {
+            CalcReal value = real(0.0);
+            CalcReal imag = real(0.0);
+            if (token.variable == '@') {
+                value = context.ans;
+                imag = context.ans_imag;
+            } else {
+                const int idx = token.variable - 'A';
+                if (idx < 0 || idx >= 26) {
+                    return fail(EvalError::UnknownIdentifier, token.pos);
+                }
+                if (override_variable != '\0' && token.variable == override_variable) {
+                    value = override_value;
+                } else if (context.variable_valid[idx]) {
+                    value = context.variables[idx];
+                    imag = context.variable_imag[idx];
+                } else {
+                    return fail(EvalError::UnknownIdentifier, token.pos);
+                }
+            }
+            if (imag != real(0.0)) {
+                used = false;
+                return fail(EvalError::Domain, token.pos);
+            }
+            if (stack_count >= kMaxStack) {
+                return fail(EvalError::StackOverflow, token.pos);
+            }
+            g_real_eval_stack[stack_count++] = value;
+            continue;
+        }
+        if (token.kind == TokenKind::Operator) {
+            if (token.op == '~') {
+                if (stack_count < 1) {
+                    return fail(EvalError::UnexpectedToken, token.pos);
+                }
+                g_real_eval_stack[stack_count - 1] = -g_real_eval_stack[stack_count - 1];
+            } else {
+                if (stack_count < 2) {
+                    return fail(EvalError::UnexpectedToken, token.pos);
+                }
+                const CalcReal rhs = g_real_eval_stack[--stack_count];
+                const CalcReal lhs = g_real_eval_stack[--stack_count];
+                CalcReal value = real(0.0);
+                switch (token.op) {
+                    case '+': value = lhs + rhs; break;
+                    case '-': value = lhs - rhs; break;
+                    case '*': value = lhs * rhs; break;
+                    case '/':
+                        if (rhs == real(0.0)) {
+                            return fail(EvalError::DivideByZero, token.pos);
+                        }
+                        value = lhs / rhs;
+                        break;
+                    case '^': {
+                        int integer = 0;
+                        if (lhs < real(0.0) && !is_near_integer(rhs, integer)) {
+                            return fail(EvalError::Domain, token.pos);
+                        }
+                        value = pow_fast(lhs, rhs);
+                        break;
+                    }
+                    default: return fail(EvalError::InvalidToken, token.pos);
+                }
+                g_real_eval_stack[stack_count++] = value;
+            }
+            if (!std::isfinite(g_real_eval_stack[stack_count - 1])) {
+                return fail(EvalError::Overflow, token.pos);
+            }
+            continue;
+        }
+        if (token.kind != TokenKind::Function || stack_count < token.arity) {
+            return fail(EvalError::UnexpectedToken, token.pos);
+        }
+        CalcReal* args = g_real_eval_stack + stack_count - token.arity;
+        CalcReal value = real(0.0);
+        switch (token.function) {
+            case Function::Sin: {
+                const CalcReal arg = context.degree_mode ? args[0] * kPi / real(180.0) : args[0];
+                value = std::sin(arg);
+                break;
+            }
+            case Function::Cos: {
+                const CalcReal arg = context.degree_mode ? args[0] * kPi / real(180.0) : args[0];
+                value = std::cos(arg);
+                break;
+            }
+            case Function::Tan: {
+                const CalcReal arg = context.degree_mode ? args[0] * kPi / real(180.0) : args[0];
+                value = std::tan(arg);
+                break;
+            }
+            case Function::ASin:
+                if (args[0] < real(-1.0) || args[0] > real(1.0)) return fail(EvalError::Domain, token.pos);
+                value = std::asin(args[0]);
+                if (context.degree_mode) value *= real(180.0) / kPi;
+                break;
+            case Function::ACos:
+                if (args[0] < real(-1.0) || args[0] > real(1.0)) return fail(EvalError::Domain, token.pos);
+                value = std::acos(args[0]);
+                if (context.degree_mode) value *= real(180.0) / kPi;
+                break;
+            case Function::ATan:
+                value = std::atan(args[0]);
+                if (context.degree_mode) value *= real(180.0) / kPi;
+                break;
+            case Function::Sqrt:
+                if (args[0] < real(0.0)) return fail(EvalError::Domain, token.pos);
+                value = std::sqrt(args[0]);
+                break;
+            case Function::Log:
+                if (args[0] <= real(0.0)) return fail(EvalError::Domain, token.pos);
+                value = std::log10(args[0]);
+                break;
+            case Function::Ln:
+                if (args[0] <= real(0.0)) return fail(EvalError::Domain, token.pos);
+                value = std::log(args[0]);
+                break;
+            case Function::Abs: value = std::fabs(args[0]); break;
+            case Function::Round: {
+                int digits = 0;
+                if (token.arity == 2) {
+                    digits = static_cast<int>(std::lround(args[1]));
+                    if (std::fabs(args[1] - static_cast<CalcReal>(digits)) > real(0.000001)) {
+                        return fail(EvalError::Domain, token.pos);
+                    }
+                }
+                if (digits < -9 || digits > 9) return fail(EvalError::Domain, token.pos);
+                const CalcReal scale = pow_integer(real(10.0), digits);
+                value = std::round(args[0] * scale) / scale;
+                break;
+            }
+            case Function::IPart: value = args[0] >= real(0.0) ? std::floor(args[0]) : std::ceil(args[0]); break;
+            case Function::FPart: {
+                const CalcReal whole = args[0] >= real(0.0) ? std::floor(args[0]) : std::ceil(args[0]);
+                value = args[0] - whole;
+                break;
+            }
+            case Function::Int: value = std::floor(args[0]); break;
+            case Function::Min:
+            case Function::Max:
+                value = args[0];
+                for (int a = 1; a < token.arity; ++a) {
+                    if ((token.function == Function::Min && args[a] < value) ||
+                        (token.function == Function::Max && args[a] > value)) value = args[a];
+                }
+                break;
+            case Function::LogBase:
+                if (args[0] <= real(0.0) || args[1] <= real(0.0) || args[1] == real(1.0)) {
+                    return fail(EvalError::Domain, token.pos);
+                }
+                value = std::log(args[0]) / std::log(args[1]);
+                break;
+            case Function::Conj:
+            case Function::Real: value = args[0]; break;
+            case Function::Imag: value = real(0.0); break;
+            case Function::Angle:
+                value = args[0] < real(0.0) ? kPi : real(0.0);
+                if (context.degree_mode) value *= real(180.0) / kPi;
+                break;
+            default:
+                used = false;
+                return fail(EvalError::Domain, token.pos);
+        }
+        if (!std::isfinite(value)) {
+            return fail(EvalError::Domain, token.pos);
+        }
+        stack_count -= token.arity;
+        if (stack_count >= kMaxStack) {
+            return fail(EvalError::StackOverflow, token.pos);
+        }
+        g_real_eval_stack[stack_count++] = value;
+    }
+    if (stack_count != 1) {
+        return fail(EvalError::UnexpectedToken, 0);
+    }
+    return ok(make_complex(g_real_eval_stack[0], real(0.0)));
+}
+
 const char* skip_spaces(const char* text) {
     while (*text != '\0' && std::isspace(static_cast<unsigned char>(*text))) {
         ++text;
@@ -1849,6 +2146,10 @@ EvalResult evaluate_impl(const char* expression,
         g_cached_parse_valid = false;
         return fail(state.error, state.error_pos);
     }
+    ++g_compile_generation;
+    if (g_compile_generation == 0) {
+        ++g_compile_generation;
+    }
     if (cacheable) {
         std::snprintf(g_cached_source, sizeof(g_cached_source), "%s", start);
         g_cached_parse_valid = true;
@@ -1892,6 +2193,61 @@ EvalResult evaluate_expression_with_x(const char* expression, EvalContext& conte
 EvalResult evaluate_expression_with_x_readonly(const char* expression, const EvalContext& context, CalcReal x_value) {
     EvalContext copy = context;
     return evaluate_impl(expression, copy, 'X', x_value, false);
+}
+
+bool compile_expression(const char* expression, CompiledExpression& compiled) {
+    compiled = {};
+    if (expression == nullptr) {
+        return false;
+    }
+    const char* start = skip_spaces(expression);
+    if (*start == '\0' || find_store_arrow(start) >= 0 || contains_special_function(start)) {
+        return false;
+    }
+    if (std::isalpha(static_cast<unsigned char>(start[0])) && *skip_spaces(start + 1) == '=') {
+        return false;
+    }
+    if (!g_cached_parse_valid || std::strcmp(start, g_cached_source) != 0) {
+        char expanded[kExpressionCapacity]{};
+        if (!expand_roots(start, expanded, kExpressionCapacity)) {
+            return false;
+        }
+        g_cached_parse.output_count = 0;
+        g_cached_parse.operator_count = 0;
+        g_cached_parse.error = EvalError::None;
+        g_cached_parse.error_pos = -1;
+        if (!parse_to_rpn(expanded, g_cached_parse)) {
+            g_cached_parse_valid = false;
+            return false;
+        }
+        std::snprintf(g_cached_source, sizeof(g_cached_source), "%s", start);
+        g_cached_parse_valid = true;
+        ++g_compile_generation;
+        if (g_compile_generation == 0) {
+            ++g_compile_generation;
+        }
+    }
+    compiled.generation = g_compile_generation;
+    compiled.valid = true;
+    compiled.real_fast_path = supports_real_fast_path(g_cached_parse);
+    return true;
+}
+
+EvalResult evaluate_compiled_with_x_readonly(const CompiledExpression& compiled,
+                                             const EvalContext& context,
+                                             CalcReal x_value) {
+    if (!compiled.valid || !g_cached_parse_valid || compiled.generation != g_compile_generation) {
+        return fail(EvalError::InvalidToken, 0);
+    }
+    EvalContext copy = context;
+    if (compiled.real_fast_path) {
+        bool used = false;
+        EvalResult result = evaluate_rpn_real(g_cached_parse, copy, 'X', x_value, used);
+        if (used) {
+            return result;
+        }
+    }
+    return evaluate_rpn(g_cached_parse, copy, 'X', x_value);
 }
 
 const char* eval_error_text(EvalError error) {
