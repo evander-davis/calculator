@@ -1,8 +1,9 @@
 # Agent Guide
 
 This project is building a TI-84 Plus CE-style scientific and graphing
-calculator for the RP2350, with a desktop emulator used to develop and verify
-portable behavior before hardware-specific drivers exist.
+calculator for the RP2350, with a desktop emulator and USB tether used to
+develop and verify portable behavior before standalone LCD and keypad drivers
+exist.
 
 Make the minimal changes necessary to achieve the assigned task. Do not make
 changes to unrelated code sections or attempt to add features outside of the
@@ -35,6 +36,8 @@ requested scope.
 - `tools` contains host utilities such as glyph generation, UF2 conversion, and
   the serial tether viewer.
 - `tests` should exercise portable behavior without SDL or Pico dependencies.
+- `artifacts` contains only promoted, verified emulator/firmware packages.
+  Generated builds and test output belong under ignored `out/` directories.
 
 Use the public API in `include/calc/calculator.hpp` as the boundary between
 platform code and calculator code. Prefer adding narrow platform hooks there
@@ -82,6 +85,7 @@ over letting hardware-specific code leak into the core.
 For portable core changes:
 
 ```powershell
+cmake -S . -B out/emulator-build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=C:\tmp\vcpkg\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCALC_BUILD_EMULATOR=ON
 cmake --build out/emulator-build
 ctest --test-dir out/emulator-build --output-on-failure
 ```
@@ -98,6 +102,7 @@ find `libusb-1.0.dll` through the vcpkg bin directory:
 ```powershell
 $env:PICO_SDK_PATH = 'C:\tmp\pico-sdk'
 $env:PATH = 'C:\tmp\vcpkg\installed\x64-windows\bin;' + $env:PATH
+cmake -S firmware -B out/firmware-build -G "NMake Makefiles" -DPICO_BOARD=seeed_xiao_rp2350
 cmake --build out/firmware-build --clean-first
 ```
 

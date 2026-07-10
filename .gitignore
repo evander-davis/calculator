@@ -4,6 +4,8 @@
 /out/
 /picotool-install/
 /.cache/
+__pycache__/
+*.pyc
 
 # Compiler, test, and firmware outputs.
 *.obj

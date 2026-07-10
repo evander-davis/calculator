@@ -20,6 +20,7 @@ tools/                     Glyph generation, UF2 conversion, serial viewer
 docs/                      Architecture, keymap, and hardware-port notes
 artifacts/emulator/        Current packaged Windows emulator
 artifacts/firmware/        Current flashable RP2350 tether firmware
+hardware/                  KiCad schematic/PCB source and hardware references
 glyphs.txt                 Editable bitmap glyph source
 calculator_keys.xlsx       Physical keypad layout reference
 ```
@@ -126,8 +127,13 @@ promoted into `artifacts`.
 Launch the computer-side tether screen after flashing:
 
 ```powershell
-py tools\tether_viewer.py --port COM4
+py tools\tether_viewer.py
 ```
+
+The viewer automatically selects the connected RP2350 when it is the only
+serial device or its USB description identifies it. To select a port manually,
+use `py tools\tether_viewer.py --port COM3` and replace `COM3` with the port
+shown by Windows Device Manager.
 
 The viewer status line reports displayed update rate, recent USB throughput,
 dirty tile/payload counts, on-device render time, and approximate key-to-frame
@@ -172,18 +178,20 @@ belong under ignored `out/` paths and are not versioned. Only the current,
 verified runnable packages in `artifacts/` are retained; see
 `artifacts/README.md` for their contents and checksums.
 
-## MVP Behavior
+## Current Behavior
 
 - Home screen expression entry, editing, history, `Ans`, clear/delete, and
   errors.
-- Scientific evaluator with arithmetic, powers, unary minus, parentheses,
-  variables, assignment, `sin/cos/tan`, inverse trig, `sqrt`, `log`, `ln`,
-  `pi`, and `e`.
+- Scientific evaluator with real and complex arithmetic, powers, factorial,
+  variables, assignment, `Ans`, trig/inverse trig, roots, logs, combinatorics,
+  calculus/summation helpers, random functions, and exact-looking fraction or
+  radical formatting where practical.
 - Math-print style display for fractions, square roots, exponents, store arrow,
   cursor anchors, and nested equation layout.
-- Graph screen with one `Y=` expression, axes, grid, pan, zoom, and
-  deterministic 320x240 rendering.
-- Screen state machine for Home, Graph, Y=, Window, Settings, and About.
+- Ten `Y=` equations, adaptive graph sampling, axes/grid, pan/zoom, trace,
+  points of interest, intersections, extrema, and a value table.
+- Screen state machine for Home, Graph, Y=, Window, Settings, About, Table,
+  Math menus, and Solver.
 - Fixed-size buffers in the calculator runtime.
 
 ## Design Constraints
