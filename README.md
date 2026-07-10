@@ -139,7 +139,8 @@ The viewer status line reports displayed update rate, recent USB throughput,
 dirty tile/payload counts, on-device render time, and approximate key-to-frame
 latency, plus the core-1 stack high-water mark. Its laptop-rendered TI-style
 keypad sends semantic key packets to the RP2350; the keypad is not part of the
-device framebuffer. Run the viewer's
+device framebuffer. Status updates do not change the viewer's window size,
+while normal window-border resizing remains available. Run the viewer's
 protocol, key-map, keypad-layout, and RGB565 conversion self-test without
 hardware:
 

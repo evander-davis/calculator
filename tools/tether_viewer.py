@@ -355,10 +355,18 @@ class Viewer:
         self.label = tk.Label(self.root, image=self.photo, bd=0)
         self.label.pack()
         self.status = tk.StringVar(value="Waiting for dirty-region keyframe...")
-        tk.Label(self.root, textvariable=self.status, anchor="w").pack(fill="x")
+        self.status_label = tk.Label(self.root, textvariable=self.status, anchor="w", width=1)
+        self.status_label.pack(fill="x")
         self.build_keypad()
         self.root.bind("<KeyPress>", self.on_key)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+
+        # Once the controls have established their natural size, give the
+        # toplevel an explicit geometry. Later status text can then be clipped
+        # to the available width without changing the window's dimensions;
+        # normal user drag-resizing remains enabled.
+        self.root.update_idletasks()
+        self.root.geometry(f"{self.root.winfo_reqwidth()}x{self.root.winfo_reqheight()}")
 
         self.rgb = bytearray(RGB888_BYTES)
         self.running = True
