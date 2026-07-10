@@ -79,9 +79,10 @@ The current RP2350 target is a USB-tether test firmware for the Seeed XIAO
 RP2350. Core 0 owns USB transport and host key reception. Core 1 runs the
 portable calculator and renders changed or cursor-blinking screens at up to
 60 Hz. Firmware uses hardware-accelerated `float` math by default and gives the
-calculator core an explicit 8 KiB stack in main SRAM. Stack canaries report the
+calculator core an explicit 16 KiB stack in main SRAM. Stack canaries report the
 measured high-water use in the tether viewer; a 40-level nested-expression and
-graph workload reached about 7.2 KiB, so the full reservation is retained. The
+graph workload reached about 7.2 KiB, leaving a conservative margin for deeper
+numerical call paths and future firmware additions. The
 transport hashes 16x16 RGB565 tiles, sends only changed tiles, and batches up to
 about 8 KiB of dirty regions per USB write. A full dirty-tile keyframe is sent
 when the viewer connects or requests recovery. Tile hashes replace a second

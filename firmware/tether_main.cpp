@@ -38,7 +38,7 @@ struct FrameReady {
 calc::Color g_lcd[calc::kLcdWidth * calc::kLcdHeight]{};
 std::uint32_t g_sent_tile_hash[kTileCount]{};
 std::uint8_t g_tx_packet[kBatchPacketBytes]{};
-alignas(8) std::uint32_t g_calculator_stack[2048]{};
+alignas(8) std::uint32_t g_calculator_stack[4096]{};
 
 mutex_t g_framebuffer_mutex;
 queue_t g_key_queue;
